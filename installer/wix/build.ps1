@@ -60,7 +60,7 @@ Invoke-Tool $heat @(
   "-cg", "AppComponentGroup",
   "-dr", "INSTALLFOLDER",
   "-sreg", "-scom", "-sfrag",
-  "-var", "var.PayloadDir",
+  "-var", "PayloadDir",
   "-out", $harvestAppWxs
 )
 
@@ -71,7 +71,7 @@ Invoke-Tool $heat @(
   "-cg", "NodeComponentGroup",
   "-dr", "INSTALLFOLDER",
   "-sreg", "-scom", "-sfrag",
-  "-var", "var.PayloadDir",
+  "-var", "PayloadDir",
   "-out", $harvestNodeWxs
 )
 
@@ -90,13 +90,13 @@ Invoke-Tool $candle @(
 # Cada harvest usa $(var.PayloadDir) apuntando a su raíz real
 Invoke-Tool $candle @(
   "-nologo",
-  "-dvar.PayloadDir=$payloadApp",
+  "-dPayloadDir=$payloadApp",
   "-out", $obj2,
   $harvestAppWxs
 )
 Invoke-Tool $candle @(
   "-nologo",
-  "-dvar.PayloadDir=$payloadNode",
+  "-dPayloadDir=$payloadNode",
   "-out", $obj3,
   $harvestNodeWxs
 )
