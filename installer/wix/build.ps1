@@ -37,6 +37,21 @@ function Invoke-Tool {
   }
 }
 
+function Normalize-HeatPayloadVar {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path
+  )
+  if (!(Test-Path $Path)) { return }
+
+  $content = Get-Content -Raw -LiteralPath $Path
+
+  # En algunos entornos, heat puede emitir $(PayloadDir) (sin prefijo). Candle espera $(var.PayloadDir).
+  if ($content -match '\$\(PayloadDir\)') {
+    $content = $content -replace '\$\(PayloadDir\)', '$(var.PayloadDir)'
+    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+  }
+}
+
 $payloadRoot = Join-Path $RepoRoot "installer\dist\payload"
 $payloadApp = Join-Path $payloadRoot "app"
 $payloadNode = Join-Path $payloadRoot "node"
@@ -60,9 +75,10 @@ Invoke-Tool $heat @(
   "-cg", "AppComponentGroup",
   "-dr", "INSTALLFOLDER",
   "-sreg", "-scom", "-sfrag",
-  "-var", "PayloadDir",
+  "-var", "var.PayloadDir",
   "-out", $harvestAppWxs
 )
+Normalize-HeatPayloadVar -Path $harvestAppWxs
 
 Write-Host "Harvesting node/ with heat..." -ForegroundColor Cyan
 Invoke-Tool $heat @(
@@ -71,9 +87,10 @@ Invoke-Tool $heat @(
   "-cg", "NodeComponentGroup",
   "-dr", "INSTALLFOLDER",
   "-sreg", "-scom", "-sfrag",
-  "-var", "PayloadDir",
+  "-var", "var.PayloadDir",
   "-out", $harvestNodeWxs
 )
+Normalize-HeatPayloadVar -Path $harvestNodeWxs
 
 # Candle/Light
 $obj1 = Join-Path $outDir "Product.wixobj"
