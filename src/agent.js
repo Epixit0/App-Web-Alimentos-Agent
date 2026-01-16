@@ -121,7 +121,12 @@ function getStableMachineId() {
           "/v",
           "MachineGuid",
         ],
-        { encoding: "utf8", windowsHide: true }
+        {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 2000,
+          stdio: ["ignore", "pipe", "ignore"],
+        }
       );
       const guid = parseRegQueryValue(out, "MachineGuid");
       if (guid) return `machineguid:${guid}`;
@@ -207,6 +212,9 @@ console.log(
 
 const MACHINE_ID = getStableMachineId();
 const HOSTNAME = os.hostname();
+
+console.log(`[INFO] hostname=${HOSTNAME}`);
+console.log(`[INFO] machineId=${MACHINE_ID}`);
 
 async function api(runtime, pathname, options = {}) {
   const url = `${runtime.apiUrl}${pathname}`;
