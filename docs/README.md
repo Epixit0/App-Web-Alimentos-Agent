@@ -41,7 +41,8 @@ Para capturar, el agente necesita las DLLs de Futronic en:
 
 Importante:
 
-- Si tu Windows/Node es 64 bits, necesitas las DLLs **x64**. Si copias DLLs x86, verás errores como `Win32 error 193`.
+- Si tu Windows/Node es 64 bits, normalmente necesitas las DLLs **x64**. Si copias DLLs x86, verás errores como `Win32 error 193`.
+- Si tu proveedor/SDK solo trae DLLs **x86 (32-bit)**, entonces la solución práctica es correr el agente con **Node x86 (ia32)** en esa PC.
 - Estas DLLs normalmente vienen en el driver/SDK de Futronic (carpeta `x64`).
 
 El instalador final debe copiar estas DLLs al directorio del agente.

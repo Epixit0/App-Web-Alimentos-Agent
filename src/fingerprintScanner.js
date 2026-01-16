@@ -51,14 +51,21 @@ function detectPeMachine(filePath) {
   // Retorna: { arch: 'x86'|'x64'|null, machine: number|null, error?: string }
   try {
     const data = fs.readFileSync(filePath);
-    if (data.length < 0x40) return { arch: null, machine: null, error: "Archivo muy pequeño" };
+    if (data.length < 0x40)
+      return { arch: null, machine: null, error: "Archivo muy pequeño" };
     // DOS header debe iniciar con 'MZ'
     if (data[0] !== 0x4d || data[1] !== 0x5a) {
-      return { arch: null, machine: null, error: "No es un PE válido (sin MZ)" };
+      return {
+        arch: null,
+        machine: null,
+        error: "No es un PE válido (sin MZ)",
+      };
     }
     const e_lfanew = readUInt32LESafe(data, 0x3c);
-    if (e_lfanew == null) return { arch: null, machine: null, error: "No se pudo leer e_lfanew" };
-    if (e_lfanew + 6 > data.length) return { arch: null, machine: null, error: "Header PE fuera de rango" };
+    if (e_lfanew == null)
+      return { arch: null, machine: null, error: "No se pudo leer e_lfanew" };
+    if (e_lfanew + 6 > data.length)
+      return { arch: null, machine: null, error: "Header PE fuera de rango" };
     // Firma PE = 'PE\0\0'
     if (
       data[e_lfanew] !== 0x50 ||
@@ -66,10 +73,15 @@ function detectPeMachine(filePath) {
       data[e_lfanew + 2] !== 0x00 ||
       data[e_lfanew + 3] !== 0x00
     ) {
-      return { arch: null, machine: null, error: "No es un PE válido (sin firma PE)" };
+      return {
+        arch: null,
+        machine: null,
+        error: "No es un PE válido (sin firma PE)",
+      };
     }
     const machine = readUInt16LESafe(data, e_lfanew + 4);
-    if (machine == null) return { arch: null, machine: null, error: "No se pudo leer machine" };
+    if (machine == null)
+      return { arch: null, machine: null, error: "No se pudo leer machine" };
 
     // Valores comunes:
     // 0x014c = IMAGE_FILE_MACHINE_I386 (x86)
@@ -79,7 +91,11 @@ function detectPeMachine(filePath) {
     if (machine === 0x8664) arch = "x64";
     return { arch, machine };
   } catch (error) {
-    return { arch: null, machine: null, error: error?.message || String(error) };
+    return {
+      arch: null,
+      machine: null,
+      error: error?.message || String(error),
+    };
   }
 }
 
@@ -131,10 +147,13 @@ function loadScanDLL(dllPath, dllName) {
     const expected = getExpectedWindowsDllArch();
     const detected = detectPeMachine(dllPath);
     if (detected.arch && detected.arch !== expected) {
+      const suggestedNodeArch = detected.arch === "x86" ? "x86 (ia32)" : "x64";
       console.error(
         `✗ ${dllName} parece ser ${detected.arch} pero tu Node es ${expected}.\n` +
           `  Esto causa el error Win32 193 (Bad EXE format).\n` +
-          `  Solución: copia las DLLs de la carpeta x64 del SDK/driver de Futronic.`
+          `  Soluciones posibles:\n` +
+          `  - Usar DLLs ${expected} (por ejemplo, carpeta ${expected} del SDK/driver de Futronic).\n` +
+          `  - O correr el agente con Node ${suggestedNodeArch} para que coincida con tus DLLs.`
       );
       return null;
     }
