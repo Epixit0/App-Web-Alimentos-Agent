@@ -46,9 +46,19 @@ Debe ser:
 
 - `C:\Windows\System32\cmd.exe`
 
+Verifica en PowerShell:
+
+- `$env:ComSpec`
+
+Si te devuelve `call` (u otra cosa distinta a `...\cmd.exe`), ahí está la causa.
+
 Arreglo rápido (PowerShell):
 
 - `setx ComSpec "%SystemRoot%\System32\cmd.exe"`
+
+Importante: `setx` NO arregla la sesión actual. Para arreglar la consola actual (antes de reintentar), ejecuta también:
+
+- `$env:ComSpec = "$env:SystemRoot\System32\cmd.exe"`
 
 Luego cierra y abre la consola, y vuelve a ejecutar:
 
