@@ -52,7 +52,7 @@
       </Component>
     </DirectoryRef>
 
-    <!-- Servicio Windows: corre node.exe + app/src/agent.js con --config ProgramData -->
+    <!-- Servicio Windows: corre node.exe + app/src/agent.js con argumento config a ProgramData -->
     <DirectoryRef Id="INSTALLFOLDER">
       <Component Id="ServiceComponent" Guid="*">
         <Directory Id="SERVICEDIR" Name="service">

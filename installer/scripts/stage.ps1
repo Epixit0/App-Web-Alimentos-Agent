@@ -64,8 +64,8 @@ if (!(Test-Path $embeddedNodeExe)) {
   Copy-Item -Force -LiteralPath $found -Destination $embeddedNodeExe
   Write-Host "OK: copiado node.exe desde: $found" -ForegroundColor Green
 }
-  # IMPORTANTE: -LiteralPath no expande '*' en PowerShell.
-  Copy-Item -Recurse -Force -Path (Join-Path $embeddedNode '*') -Destination $payloadNode
+# IMPORTANTE: -LiteralPath no expande '*' en PowerShell.
+Copy-Item -Recurse -Force -Path (Join-Path $embeddedNode '*') -Destination $payloadNode
 
 $payloadNodeExe = Join-Path $payloadNode "node.exe"
 if (!(Test-Path $payloadNodeExe)) {
