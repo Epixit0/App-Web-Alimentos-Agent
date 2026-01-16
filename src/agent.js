@@ -76,74 +76,89 @@ const resolvedConfigPath =
   defaultWindowsConfigPath ||
   defaultLocalConfigPath;
 
-const fileConfig = safeReadJson(resolvedConfigPath) || {};
+function normalizeBaseUrl(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/\/+$/, "");
+}
 
-const API_URL =
-  (typeof args.apiUrl === "string" ? args.apiUrl : null) ||
-  (typeof fileConfig.apiUrl === "string" ? fileConfig.apiUrl : null) ||
-  process.env.API_URL;
+function readRuntimeConfig() {
+  const fileConfig = safeReadJson(resolvedConfigPath);
+  const cfg = fileConfig && typeof fileConfig === "object" ? fileConfig : {};
 
-const STATION_ID =
-  (typeof args.stationId === "string" ? args.stationId : null) ||
-  (typeof fileConfig.stationId === "string" ? fileConfig.stationId : null) ||
-  process.env.STATION_ID;
+  const apiUrlRaw =
+    (typeof args.apiUrl === "string" ? args.apiUrl : null) ||
+    (typeof cfg.apiUrl === "string" ? cfg.apiUrl : null) ||
+    process.env.API_URL;
 
-const AGENT_KEY =
-  (typeof args.agentKey === "string" ? args.agentKey : null) ||
-  (typeof fileConfig.agentKey === "string" ? fileConfig.agentKey : null) ||
-  process.env.AGENT_KEY;
+  const stationIdRaw =
+    (typeof args.stationId === "string" ? args.stationId : null) ||
+    (typeof cfg.stationId === "string" ? cfg.stationId : null) ||
+    process.env.STATION_ID;
 
-const POLL_INTERVAL_MS = Number(
-  (typeof args.pollIntervalMs === "string" ? args.pollIntervalMs : null) ||
-    (typeof fileConfig.pollIntervalMs === "number"
-      ? fileConfig.pollIntervalMs
+  const agentKeyRaw =
+    (typeof args.agentKey === "string" ? args.agentKey : null) ||
+    (typeof cfg.agentKey === "string" ? cfg.agentKey : null) ||
+    process.env.AGENT_KEY;
+
+  const pollIntervalMs = Number(
+    (typeof args.pollIntervalMs === "string" ? args.pollIntervalMs : null) ||
+      (typeof cfg.pollIntervalMs === "number" ? cfg.pollIntervalMs : null) ||
+      process.env.POLL_INTERVAL_MS ||
+      2000
+  );
+
+  const heartbeatIntervalMs = Number(
+    (typeof args.heartbeatIntervalMs === "string"
+      ? args.heartbeatIntervalMs
       : null) ||
-    process.env.POLL_INTERVAL_MS ||
-    2000
-);
+      (typeof cfg.heartbeatIntervalMs === "number"
+        ? cfg.heartbeatIntervalMs
+        : null) ||
+      process.env.HEARTBEAT_INTERVAL_MS ||
+      10_000
+  );
 
-const HEARTBEAT_INTERVAL_MS = Number(
-  (typeof args.heartbeatIntervalMs === "string"
-    ? args.heartbeatIntervalMs
-    : null) ||
-    (typeof fileConfig.heartbeatIntervalMs === "number"
-      ? fileConfig.heartbeatIntervalMs
-      : null) ||
-    process.env.HEARTBEAT_INTERVAL_MS ||
-    10_000
-);
+  return {
+    configExists: Boolean(fileConfig),
+    configPath: resolvedConfigPath,
+    apiUrl: normalizeBaseUrl(apiUrlRaw),
+    stationId:
+      typeof stationIdRaw === "string" && stationIdRaw.trim()
+        ? stationIdRaw.trim()
+        : null,
+    agentKey:
+      typeof agentKeyRaw === "string" && agentKeyRaw.trim()
+        ? agentKeyRaw.trim()
+        : null,
+    pollIntervalMs:
+      Number.isFinite(pollIntervalMs) && pollIntervalMs > 0
+        ? pollIntervalMs
+        : 2000,
+    heartbeatIntervalMs:
+      Number.isFinite(heartbeatIntervalMs) && heartbeatIntervalMs > 0
+        ? heartbeatIntervalMs
+        : 10_000,
+  };
+}
 
 if (!nodeFetch) {
   console.error("No hay fetch disponible. Use Node 18+ o incluya node-fetch.");
   process.exit(1);
 }
 
-if (!API_URL) {
-  console.error("Falta apiUrl/API_URL (ej: https://tu-backend.vercel.app/api)");
-  process.exit(1);
-}
-if (!STATION_ID) {
-  console.error("Falta stationId/STATION_ID (ej: pc-1)");
-  process.exit(1);
-}
-if (!AGENT_KEY) {
-  console.error(
-    "Falta agentKey/AGENT_KEY (debe coincidir con FINGERPRINT_AGENT_KEY)"
-  );
-  process.exit(1);
-}
+console.log(
+  `Fingerprint agent iniciado. Config esperado en: ${resolvedConfigPath}`
+);
 
-if (safeReadJson(resolvedConfigPath)) {
-  console.log(`Config cargada desde: ${resolvedConfigPath}`);
-}
-
-async function api(pathname, options = {}) {
-  const url = `${API_URL}${pathname}`;
+async function api(runtime, pathname, options = {}) {
+  const url = `${runtime.apiUrl}${pathname}`;
   const res = await nodeFetch(url, {
     ...options,
     headers: {
       "content-type": "application/json",
-      "x-fingerprint-agent-key": AGENT_KEY,
+      "x-fingerprint-agent-key": runtime.agentKey,
       ...(options.headers || {}),
     },
   });
@@ -167,28 +182,28 @@ async function api(pathname, options = {}) {
   return data;
 }
 
-async function heartbeat() {
-  await api(`/fingerprint/agent/heartbeat`, {
+async function heartbeat(runtime) {
+  await api(runtime, `/fingerprint/agent/heartbeat`, {
     method: "POST",
-    body: JSON.stringify({ stationId: STATION_ID }),
+    body: JSON.stringify({ stationId: runtime.stationId }),
   });
 }
 
-async function nextJob() {
-  const qs = new URLSearchParams({ stationId: STATION_ID }).toString();
-  const data = await api(`/fingerprint/agent/next?${qs}`);
+async function nextJob(runtime) {
+  const qs = new URLSearchParams({ stationId: runtime.stationId }).toString();
+  const data = await api(runtime, `/fingerprint/agent/next?${qs}`);
   return data?.job || null;
 }
 
-async function submitCapture(jobId, buffer) {
-  return api(`/fingerprint/agent/jobs/${jobId}/capture`, {
+async function submitCapture(runtime, jobId, buffer) {
+  return api(runtime, `/fingerprint/agent/jobs/${jobId}/capture`, {
     method: "POST",
     body: JSON.stringify({ templateBase64: buffer.toString("base64") }),
   });
 }
 
-async function failJob(jobId, error) {
-  return api(`/fingerprint/agent/jobs/${jobId}/fail`, {
+async function failJob(runtime, jobId, error) {
+  return api(runtime, `/fingerprint/agent/jobs/${jobId}/fail`, {
     method: "POST",
     body: JSON.stringify({ error }),
   });
@@ -222,15 +237,39 @@ async function capture() {
   }
 }
 
-console.log(`Fingerprint agent iniciado. stationId=${STATION_ID}`);
-
 let lastHeartbeat = 0;
+let loggedConfigPath = false;
+let lastMissingConfigLogAt = 0;
 
 while (true) {
+  const runtime = readRuntimeConfig();
+
+  if (runtime.configExists && !loggedConfigPath) {
+    console.log(`Config cargada desde: ${runtime.configPath}`);
+    loggedConfigPath = true;
+  }
+
+  const missing = [];
+  if (!runtime.apiUrl) missing.push("apiUrl/API_URL");
+  if (!runtime.stationId) missing.push("stationId/STATION_ID");
+  if (!runtime.agentKey) missing.push("agentKey/AGENT_KEY");
+  if (missing.length > 0) {
+    const now = Date.now();
+    if (now - lastMissingConfigLogAt > 10_000) {
+      console.error(
+        `Config incompleta. Falta: ${missing.join(", ")}. ` +
+          `El servicio seguirá corriendo y reintentará. Path: ${runtime.configPath}`
+      );
+      lastMissingConfigLogAt = now;
+    }
+    await sleep(2000);
+    continue;
+  }
+
   const now = Date.now();
-  if (now - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
+  if (now - lastHeartbeat > runtime.heartbeatIntervalMs) {
     try {
-      await heartbeat();
+      await heartbeat(runtime);
       lastHeartbeat = now;
     } catch (e) {
       console.warn("Heartbeat falló:", e.message);
@@ -239,15 +278,15 @@ while (true) {
 
   let job = null;
   try {
-    job = await nextJob();
+    job = await nextJob(runtime);
   } catch (e) {
     console.warn("Error consultando jobs:", e.message);
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(runtime.pollIntervalMs);
     continue;
   }
 
   if (!job) {
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(runtime.pollIntervalMs);
     continue;
   }
 
@@ -255,12 +294,12 @@ while (true) {
 
   try {
     const template = await capture();
-    await submitCapture(job._id, template);
+    await submitCapture(runtime, job._id, template);
     console.log(`Job completado: ${job._id}`);
   } catch (e) {
     console.error(`Job falló: ${job._id}: ${e.message}`);
     try {
-      await failJob(job._id, e.message);
+      await failJob(runtime, job._id, e.message);
     } catch (inner) {
       console.warn("No se pudo reportar fallo:", inner.message);
     }
