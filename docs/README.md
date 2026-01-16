@@ -34,6 +34,8 @@ Luego revisa:
 
 ## Errores comunes en Windows (npm / node-gyp)
 
+Nota: el agente usa `koffi` para llamar DLLs y trae binarios precompilados en Windows x86/x64. Si `npm install` está intentando compilar cosas con `node-gyp`, normalmente es porque quedó un `node_modules` viejo o porque estás instalando en una carpeta con residuos de una instalación anterior.
+
 ### `"call" no se reconoce como un comando...` / aparece `call "call" ... preprocess_asm.cmd`
 
 Si en el log de `npm install` ves algo como:
@@ -72,7 +74,10 @@ Pasos recomendados:
 
 - Cierra el agente si está ejecutándose.
 - En PowerShell: `taskkill /f /im node.exe` (solo si no tienes otros Node corriendo)
-- Borra `node_modules` manualmente (o reinicia la PC si está “bloqueado”).
+- Borra `node_modules`:
+  - PowerShell: `Remove-Item -Recurse -Force node_modules`
+  - o CMD: `cmd /c rd /s /q node_modules`
+  - Si sigue “bloqueado”, reinicia la PC y vuelve a intentar.
 
 ## DLLs
 

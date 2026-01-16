@@ -6,20 +6,16 @@ import fs from "fs";
 
 const require = createRequire(import.meta.url);
 
-let ffi = null;
-let ref = null;
-let StructType = null;
 let nativeDepsAvailable = false;
+let koffi = null;
 
 try {
-  ffi = require("ffi-napi");
-  ref = require("ref-napi");
-  StructType = require("ref-struct-napi");
+  koffi = require("koffi");
   nativeDepsAvailable = true;
 } catch (error) {
   const message = error?.message || String(error);
   console.error(
-    "Dependencias nativas del lector (ffi-napi/ref-napi) no disponibles en el agente.",
+    "Dependencias nativas del lector (koffi) no disponibles en el agente.",
     message
   );
 }
@@ -99,17 +95,12 @@ function detectPeMachine(filePath) {
   }
 }
 
-// Definir tipos para FFI (solo si están disponibles)
-const FTRHANDLE = nativeDepsAvailable ? ref.refType(ref.types.void) : null;
-const FTR_PVOID = nativeDepsAvailable ? ref.refType(ref.types.void) : null;
-const FTR_BOOL = nativeDepsAvailable ? ref.types.int32 : null; // TRUE = 1, FALSE = 0
-
 const FTRSCAN_FRAME_PARAMETERS = nativeDepsAvailable
-  ? StructType({
-      nWidth: ref.types.int32,
-      nHeight: ref.types.int32,
-      nImageSize: ref.types.int32,
-      nResolution: ref.types.int32,
+  ? koffi.struct("FTRSCAN_FRAME_PARAMETERS", {
+      nWidth: "int",
+      nHeight: "int",
+      nImageSize: "int",
+      nResolution: "int",
     })
   : null;
 
@@ -158,14 +149,17 @@ function loadScanDLL(dllPath, dllName) {
       return null;
     }
 
-    const library = ffi.Library(dllPath, {
-      ftrScanOpenDevice: [FTRHANDLE, []],
-      ftrScanGetFrame: [
-        FTR_BOOL,
-        [FTRHANDLE, FTR_PVOID, FTRSCAN_FRAME_PARAMETERS],
-      ],
-      ftrScanCloseDevice: ["void", [FTRHANDLE]],
-    });
+    const callConv = "__stdcall";
+    const lib = koffi.load(dllPath);
+    const library = {
+      ftrScanOpenDevice: lib.func(`void* ${callConv} ftrScanOpenDevice()`),
+      ftrScanGetFrame: lib.func(
+        `int ${callConv} ftrScanGetFrame(void* hDevice, void* pBuffer, FTRSCAN_FRAME_PARAMETERS* pParams)`
+      ),
+      ftrScanCloseDevice: lib.func(
+        `void ${callConv} ftrScanCloseDevice(void* hDevice)`
+      ),
+    };
 
     console.log(`✓ ${dllName} cargada exitosamente (funciones de escaneo)`);
     return library;
@@ -211,6 +205,35 @@ class FingerprintScanner {
     this.isOpen = false;
   }
 
+  isNullHandle(handle) {
+    if (handle == null) return true;
+    if (typeof handle === "number") return handle === 0;
+
+    if (nativeDepsAvailable && koffi && typeof koffi.address === "function") {
+      try {
+        const addr = koffi.address(handle);
+        if (typeof addr === "bigint") return addr === 0n;
+        if (typeof addr === "number") return addr === 0;
+      } catch {
+        // ignore
+      }
+    }
+
+    if (Buffer.isBuffer(handle)) {
+      return handle.length === 0;
+    }
+
+    if (typeof handle.isNull === "function") {
+      try {
+        return handle.isNull();
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
   openDevice() {
     try {
       if (!ftrScanAPI) {
@@ -224,7 +247,7 @@ class FingerprintScanner {
 
       this.handle = ftrScanAPI.ftrScanOpenDevice();
 
-      if (this.handle.isNull()) {
+      if (this.isNullHandle(this.handle)) {
         this.isOpen = false;
         return false;
       }
@@ -243,7 +266,7 @@ class FingerprintScanner {
         return false;
       }
       const testHandle = ftrScanAPI.ftrScanOpenDevice();
-      if (testHandle.isNull()) {
+      if (this.isNullHandle(testHandle)) {
         return false;
       }
       ftrScanAPI.ftrScanCloseDevice(testHandle);
@@ -259,11 +282,7 @@ class FingerprintScanner {
         return null;
       }
 
-      if (
-        !this.isOpen ||
-        !this.handle ||
-        (typeof this.handle.isNull === "function" && this.handle.isNull())
-      ) {
+      if (!this.isOpen || !this.handle || this.isNullHandle(this.handle)) {
         return null;
       }
 
@@ -320,11 +339,7 @@ class FingerprintScanner {
       if (!ftrScanAPI) {
         return;
       }
-      if (
-        this.isOpen &&
-        this.handle &&
-        (typeof this.handle.isNull !== "function" || !this.handle.isNull())
-      ) {
+      if (this.isOpen && this.handle && !this.isNullHandle(this.handle)) {
         ftrScanAPI.ftrScanCloseDevice(this.handle);
         this.handle = null;
         this.isOpen = false;

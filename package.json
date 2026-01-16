@@ -9,9 +9,7 @@
     "start:config": "node src/agent.js --config %PROGRAMDATA%\\MarCaribeFingerprintAgent\\config.json"
   },
   "dependencies": {
-    "ffi-napi": "^4.0.3",
-    "node-fetch": "^2.6.12",
-    "ref-napi": "^3.0.3",
-    "ref-struct-napi": "^1.1.1"
+    "koffi": "^2.15.0",
+    "node-fetch": "^2.6.12"
   }
 }
