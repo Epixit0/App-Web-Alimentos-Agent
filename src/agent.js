@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import os from "os";
+import { execFileSync } from "child_process";
 import { getScanner } from "./fingerprintScanner.js";
 
 const require = createRequire(import.meta.url);
@@ -84,25 +85,53 @@ function normalizeBaseUrl(value) {
   return trimmed.replace(/\/+$/, "");
 }
 
-function deriveStationIdFromHostname() {
-  const raw =
-    (typeof process.env.COMPUTERNAME === "string" &&
-    process.env.COMPUTERNAME.trim()
-      ? process.env.COMPUTERNAME
-      : null) || os.hostname();
+function parseRegQueryValue(output, valueName) {
+  // Output típico:
+  // HKEY_LOCAL_MACHINE\...\Cryptography
+  //     MachineGuid    REG_SZ    xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  const lines = String(output).split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (!trimmed.toLowerCase().startsWith(valueName.toLowerCase())) continue;
+    const parts = trimmed.split(/\s+/);
+    // [MachineGuid, REG_SZ, value...]
+    if (parts.length >= 3) {
+      return parts.slice(2).join(" ").trim();
+    }
+  }
+  return null;
+}
 
-  if (typeof raw !== "string") return null;
-  const host = raw.trim();
-  if (!host) return null;
+function getStableMachineId() {
+  const fromEnv =
+    typeof process.env.FINGERPRINT_AGENT_MACHINE_ID === "string" &&
+    process.env.FINGERPRINT_AGENT_MACHINE_ID.trim()
+      ? process.env.FINGERPRINT_AGENT_MACHINE_ID.trim()
+      : null;
+  if (fromEnv) return fromEnv;
 
-  // Acepta: PC-2, PC2, PC_2, PC 2 (cualquier combinación de separador)
-  const lower = host.toLowerCase();
-  const match = lower.match(/^pc(?:[-_ ]?)(\d+)$/);
-  if (!match) return null;
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "reg.exe",
+        [
+          "query",
+          "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+          "/v",
+          "MachineGuid",
+        ],
+        { encoding: "utf8", windowsHide: true }
+      );
+      const guid = parseRegQueryValue(out, "MachineGuid");
+      if (guid) return `machineguid:${guid}`;
+    } catch {
+      // ignore
+    }
+  }
 
-  const n = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return `pc-${n}`;
+  const host = os.hostname();
+  return host ? `hostname:${host}` : "unknown";
 }
 
 function readRuntimeConfig() {
@@ -147,13 +176,11 @@ function readRuntimeConfig() {
       ? stationIdRaw.trim()
       : null;
 
-  const derivedStationId = stationIdFromInputs || deriveStationIdFromHostname();
-
   return {
     configExists: Boolean(fileConfig),
     configPath: resolvedConfigPath,
     apiUrl: normalizeBaseUrl(apiUrlRaw),
-    stationId: derivedStationId,
+    stationId: stationIdFromInputs,
     agentKey:
       typeof agentKeyRaw === "string" && agentKeyRaw.trim()
         ? agentKeyRaw.trim()
@@ -177,6 +204,9 @@ if (!nodeFetch) {
 console.log(
   `Fingerprint agent iniciado. Config esperado en: ${resolvedConfigPath}`
 );
+
+const MACHINE_ID = getStableMachineId();
+const HOSTNAME = os.hostname();
 
 async function api(runtime, pathname, options = {}) {
   const url = `${runtime.apiUrl}${pathname}`;
@@ -211,8 +241,25 @@ async function api(runtime, pathname, options = {}) {
 async function heartbeat(runtime) {
   await api(runtime, `/fingerprint/agent/heartbeat`, {
     method: "POST",
-    body: JSON.stringify({ stationId: runtime.stationId }),
+    body: JSON.stringify({
+      stationId: runtime.stationId,
+      machineId: runtime.machineId,
+      hostname: runtime.hostname,
+    }),
   });
+}
+
+async function registerStation(runtime) {
+  const data = await api(runtime, `/fingerprint/agent/register`, {
+    method: "POST",
+    body: JSON.stringify({
+      machineId: runtime.machineId,
+      hostname: runtime.hostname,
+    }),
+  });
+  return typeof data?.stationId === "string" && data.stationId.trim()
+    ? data.stationId.trim()
+    : null;
 }
 
 async function nextJob(runtime) {
@@ -266,9 +313,16 @@ async function capture() {
 let lastHeartbeat = 0;
 let loggedConfigPath = false;
 let lastMissingConfigLogAt = 0;
+let cachedStationId = null;
+let lastRegisterAttemptAt = 0;
 
 while (true) {
-  const runtime = readRuntimeConfig();
+  const runtimeBase = readRuntimeConfig();
+  const runtime = {
+    ...runtimeBase,
+    machineId: MACHINE_ID,
+    hostname: HOSTNAME,
+  };
 
   if (runtime.configExists && !loggedConfigPath) {
     console.log(`Config cargada desde: ${runtime.configPath}`);
@@ -277,7 +331,6 @@ while (true) {
 
   const missing = [];
   if (!runtime.apiUrl) missing.push("apiUrl/API_URL");
-  if (!runtime.stationId) missing.push("stationId/STATION_ID");
   if (!runtime.agentKey) missing.push("agentKey/AGENT_KEY");
   if (missing.length > 0) {
     const now = Date.now();
@@ -292,10 +345,45 @@ while (true) {
     continue;
   }
 
+  // Resolver stationId: del config/args o por auto-registro (machineId -> pc-1..pc-6)
+  let stationId = runtime.stationId || cachedStationId;
+  if (!stationId) {
+    const now = Date.now();
+    if (now - lastRegisterAttemptAt > 10_000) {
+      lastRegisterAttemptAt = now;
+      try {
+        const assigned = await registerStation(runtime);
+        if (assigned) {
+          cachedStationId = assigned;
+          stationId = assigned;
+          console.log(`Estación asignada automáticamente: ${assigned}`);
+        }
+      } catch (e) {
+        // Si el backend aún no tiene el endpoint, se verá aquí.
+        console.warn("No se pudo auto-asignar estación:", e.message);
+      }
+    }
+  }
+
+  if (!stationId) {
+    const now = Date.now();
+    if (now - lastMissingConfigLogAt > 10_000) {
+      console.error(
+        `Config incompleta. Falta: stationId/STATION_ID (se intentó auto-asignación). ` +
+          `El servicio seguirá corriendo y reintentará. Path: ${runtime.configPath}`
+      );
+      lastMissingConfigLogAt = now;
+    }
+    await sleep(2000);
+    continue;
+  }
+
+  const effectiveRuntime = { ...runtime, stationId };
+
   const now = Date.now();
-  if (now - lastHeartbeat > runtime.heartbeatIntervalMs) {
+  if (now - lastHeartbeat > effectiveRuntime.heartbeatIntervalMs) {
     try {
-      await heartbeat(runtime);
+      await heartbeat(effectiveRuntime);
       lastHeartbeat = now;
     } catch (e) {
       console.warn("Heartbeat falló:", e.message);
@@ -304,15 +392,15 @@ while (true) {
 
   let job = null;
   try {
-    job = await nextJob(runtime);
+    job = await nextJob(effectiveRuntime);
   } catch (e) {
     console.warn("Error consultando jobs:", e.message);
-    await sleep(runtime.pollIntervalMs);
+    await sleep(effectiveRuntime.pollIntervalMs);
     continue;
   }
 
   if (!job) {
-    await sleep(runtime.pollIntervalMs);
+    await sleep(effectiveRuntime.pollIntervalMs);
     continue;
   }
 
@@ -320,12 +408,12 @@ while (true) {
 
   try {
     const template = await capture();
-    await submitCapture(runtime, job._id, template);
+    await submitCapture(effectiveRuntime, job._id, template);
     console.log(`Job completado: ${job._id}`);
   } catch (e) {
     console.error(`Job falló: ${job._id}: ${e.message}`);
     try {
-      await failJob(runtime, job._id, e.message);
+      await failJob(effectiveRuntime, job._id, e.message);
     } catch (inner) {
       console.warn("No se pudo reportar fallo:", inner.message);
     }

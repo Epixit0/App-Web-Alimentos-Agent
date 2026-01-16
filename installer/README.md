@@ -89,18 +89,16 @@ Edita:
 Campos típicos:
 
 - `apiUrl`
-- `stationId` (pc-1..pc-6)
 - `agentKey`
+
+`stationId` es **opcional**.
 
 ### Instalar en varias PCs sin editar `stationId`
 
-Opción recomendada (sin tocar archivos):
+Opción recomendada (sin tocar el nombre de la PC):
 
-- Renombra cada PC con el formato `PC-1`, `PC-2`, `PC-3`, etc.
 - No pongas `stationId` en el config.
+- El agente se auto-identifica con un `machineId` estable (Windows MachineGuid) y llama al backend.
+- El backend le asigna automáticamente una estación libre de `FINGERPRINT_STATIONS` (por defecto `pc-1..pc-6`).
 
-El agente detecta automáticamente:
-
-- `PC-2` / `PC2` / `PC_2` / `PC 2` → `pc-2`
-
-Si la PC no está nombrada con ese patrón, entonces sí debes definir `stationId` manualmente en el config.
+Esto permite usar **el mismo MSI** en todas las PCs sin editar nada localmente, siempre que todas compartan el mismo `agentKey`.
