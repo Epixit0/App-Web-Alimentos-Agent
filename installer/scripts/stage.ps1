@@ -66,6 +66,11 @@ if (!(Test-Path $embeddedNodeExe)) {
 }
 Copy-Item -Recurse -Force -LiteralPath $embeddedNode\* -Destination $payloadNode
 
+$payloadNodeExe = Join-Path $payloadNode "node.exe"
+if (!(Test-Path $payloadNodeExe)) {
+  throw "Staging incompleto: no quedó node.exe en $payloadNodeExe. Verifica installer\\assets\\node\\node.exe y vuelve a correr stage.ps1."
+}
+
 # Copy WinSW service wrapper
 $winswDir = Join-Path $RepoRoot "installer\assets\winsw"
 $winswExe = Join-Path $winswDir "MarCaribeFingerprintAgent.exe"
@@ -78,6 +83,12 @@ if (!(Test-Path $winswXml)) {
 }
 Copy-Item -Force -LiteralPath $winswExe -Destination $payloadService
 Copy-Item -Force -LiteralPath $winswXml -Destination $payloadService
+
+$payloadWinSWExe = Join-Path $payloadService "MarCaribeFingerprintAgent.exe"
+$payloadWinSWXml = Join-Path $payloadService "MarCaribeFingerprintAgent.xml"
+if (!(Test-Path $payloadWinSWExe) -or !(Test-Path $payloadWinSWXml)) {
+  throw "Staging incompleto: no quedó WinSW en $payloadService. Verifica installer\\assets\\winsw y vuelve a correr stage.ps1."
+}
 
 # Default config (only used by MSI on first install)
 $cfgExample = Join-Path $RepoRoot "agent.config.example.json"
