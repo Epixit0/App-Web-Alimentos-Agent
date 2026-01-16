@@ -86,6 +86,11 @@ Para capturar, el agente necesita las DLLs de Futronic en:
 - `App-Web-Alimentos-Agent\\lib\\FTRAPI.dll`
 - `App-Web-Alimentos-Agent\\lib\\ftrScanAPI.dll`
 
+Nota:
+
+- Para **captura de frame**, el agente usa principalmente `ftrScanAPI.dll`. `FTRAPI.dll` puede existir en el SDK pero en esta versión del agente no es estrictamente necesaria para capturar.
+- Evita mezclar DLLs **x86** y **x64** entre sí (por ejemplo `FTRAPI.dll` x64 con `ftrScanAPI.dll` x86), porque eso genera mensajes de incompatibilidad y/o `Win32 error 193`.
+
 Importante:
 
 - Si tu Windows/Node es 64 bits, normalmente necesitas las DLLs **x64**. Si copias DLLs x86, verás errores como `Win32 error 193`.

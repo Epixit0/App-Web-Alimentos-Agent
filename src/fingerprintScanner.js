@@ -185,11 +185,25 @@ function loadScanDLL(dllPath, dllName) {
   }
 }
 
-ftrScanAPI = loadScanDLL(ftrAPIPath, "FTRAPI.dll");
+// Para captura, normalmente se usa ftrScanAPI.dll. FTRAPI.dll puede existir
+// pero no es necesaria para obtener frames en esta versión del agente.
+ftrScanAPI = loadScanDLL(ftrScanAPIPath, "ftrScanAPI.dll");
 
 if (!ftrScanAPI) {
-  console.log("  Intentando cargar desde ftrScanAPI.dll...");
-  ftrScanAPI = loadScanDLL(ftrScanAPIPath, "ftrScanAPI.dll");
+  console.log("  Intentando cargar desde FTRAPI.dll...");
+  ftrScanAPI = loadScanDLL(ftrAPIPath, "FTRAPI.dll");
+} else if (fileExists(ftrAPIPath)) {
+  // Si ftrScanAPI.dll ya cargó, reporta incompatibilidad de FTRAPI.dll como warning
+  // (en vez de error) para evitar confusión cuando hay DLLs mezcladas.
+  const expected = getExpectedWindowsDllArch();
+  const detected = detectPeMachine(ftrAPIPath);
+  if (detected.arch && detected.arch !== expected) {
+    console.warn(
+      `⚠ FTRAPI.dll parece ser ${detected.arch} pero tu Node es ${expected}. ` +
+        `Si ftrScanAPI.dll ya cargó, la captura puede funcionar igual. ` +
+        `Evita mezclar DLLs x86/x64 y usa el mismo paquete (x86 o x64) para ambas.`
+    );
+  }
 }
 
 if (!ftrScanAPI) {
