@@ -12,6 +12,7 @@
     Id="*"
     Name="MarCaribe Fingerprint Agent"
     Language="1033"
+    Codepage="65001"
     Version="1.0.0"
     Manufacturer="MarCaribe"
     UpgradeCode="{b0ae7f0d-cd24-404d-a30f-969decb5690e}">
@@ -76,7 +77,6 @@
         <ServiceControl
           Id="StartService"
           Name="MarCaribeFingerprintAgent"
-          Start="install"
           Stop="both"
           Remove="uninstall"
           Wait="yes" />
@@ -84,11 +84,4 @@
     </DirectoryRef>
 
   </Product>
-
-  <!-- Heat genera este ComponentGroup -->
-  <Fragment>
-    <ComponentGroup Id="AppComponentGroup" />
-    <ComponentGroup Id="NodeComponentGroup" />
-  </Fragment>
-
 </Wix>

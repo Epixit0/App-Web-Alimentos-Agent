@@ -74,6 +74,32 @@ $harvestAppWxs = Join-Path $outDir "Harvest.App.wxs"
 $harvestNodeWxs = Join-Path $outDir "Harvest.Node.wxs"
 $productWxs = Join-Path $RepoRoot "installer\wix\Product.wxs"
 
+function Assert-ProductWxs {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path
+  )
+
+  if (!(Test-Path $Path)) {
+    throw "No existe Product.wxs en: $Path"
+  }
+
+  Write-Host "Using Product.wxs -> $Path" -ForegroundColor DarkCyan
+
+  $content = Get-Content -Raw -LiteralPath $Path
+
+  # Detecta exactamente los patrones de error reportados por candle.exe.
+  if ($content -match '<File[^>]*\bNeverOverwrite\s*=') {
+    throw "Product.wxs inválido: hay un <File ... NeverOverwrite=...>. En WiX v3, NeverOverwrite debe ir en <Component>, no en <File>."
+  }
+
+  # WiX no permite <Directory> como hijo directo de <Component>.
+  if ($content -match '<Component\b[^>]*>\s*<Directory\b') {
+    throw "Product.wxs inválido: hay un <Directory> dentro de un <Component>. Mueve ese Directory al árbol de <Directory> y usa <DirectoryRef>."
+  }
+}
+
+Assert-ProductWxs -Path $productWxs
+
 Write-Host "Harvesting app/ with heat..." -ForegroundColor Cyan
 Invoke-Tool $heat @(
   "dir", $payloadApp,

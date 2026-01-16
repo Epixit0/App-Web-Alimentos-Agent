@@ -4,7 +4,7 @@
   <description>Servicio biométrico MarCaribe (Futronic)</description>
 
   <executable>%BASE%\..\node\node.exe</executable>
-  <arguments>%BASE%\..\app\src\agent.js --config %PROGRAMDATA%\MarCaribeFingerprintAgent\config.json</arguments>
+  <arguments>"%BASE%\..\app\src\agent.js" --config "%PROGRAMDATA%\MarCaribeFingerprintAgent\config.json"</arguments>
 
   <logpath>%PROGRAMDATA%\MarCaribeFingerprintAgent\logs</logpath>
   <log mode="roll" />
