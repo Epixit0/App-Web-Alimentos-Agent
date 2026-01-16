@@ -43,7 +43,8 @@ if (!(Test-Path $embeddedNodeExe)) {
   try {
     $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($cmd -and $cmd.Source) { $found = $cmd.Source }
-  } catch {}
+  }
+  catch {}
 
   if (-not $found) {
     try {
@@ -51,7 +52,8 @@ if (!(Test-Path $embeddedNodeExe)) {
       if ($LASTEXITCODE -eq 0 -and $paths) {
         $found = ($paths | Select-Object -First 1)
       }
-    } catch {}
+    }
+    catch {}
   }
 
   if (-not $found -or !(Test-Path $found)) {
