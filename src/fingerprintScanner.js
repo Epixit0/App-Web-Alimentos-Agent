@@ -296,6 +296,10 @@ class FingerprintScanner {
         return null;
       }
 
+      if (!FTRSCAN_FRAME_PARAMETERS) {
+        return null;
+      }
+
       if (!this.isOpen || !this.handle || this.isNullHandle(this.handle)) {
         return null;
       }
@@ -305,7 +309,9 @@ class FingerprintScanner {
       const frameParams = new FTRSCAN_FRAME_PARAMETERS();
       frameParams.nWidth = 0;
       frameParams.nHeight = 0;
-      frameParams.nImageSize = 0;
+      // Muchos SDKs usan este campo como IN/OUT: tamaño del buffer disponible.
+      // Si se deja en 0, puede fallar o devolver 0 bytes.
+      frameParams.nImageSize = bufferSize;
       frameParams.nResolution = 0;
 
       const result = ftrScanAPI.ftrScanGetFrame(
@@ -338,7 +344,7 @@ class FingerprintScanner {
         if (frame && frame.length > 0) {
           resolve(frame);
         } else if (attempts < maxAttempts) {
-          setTimeout(tryCapture, 2000);
+          setTimeout(tryCapture, 250);
         } else {
           resolve(null);
         }
