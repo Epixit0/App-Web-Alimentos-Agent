@@ -219,6 +219,10 @@ class FingerprintScanner {
     this.isOpen = false;
   }
 
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   isNullHandle(handle) {
     if (handle == null) return true;
     if (typeof handle === "number") return handle === 0;
@@ -333,25 +337,57 @@ class FingerprintScanner {
     }
   }
 
+  async getFrameAsync(bufferSize = 153600) {
+    try {
+      if (!ftrScanAPI) return null;
+      if (!FTRSCAN_FRAME_PARAMETERS) return null;
+      if (!this.isOpen || !this.handle || this.isNullHandle(this.handle)) return null;
+
+      const fn = ftrScanAPI.ftrScanGetFrame;
+      if (!fn || typeof fn.async !== "function") {
+        // Fallback: si por alguna razón no existe .async
+        return this.getFrame(bufferSize);
+      }
+
+      const imageBuffer = Buffer.alloc(bufferSize);
+
+      const frameParams = new FTRSCAN_FRAME_PARAMETERS();
+      frameParams.nWidth = 0;
+      frameParams.nHeight = 0;
+      frameParams.nImageSize = bufferSize;
+      frameParams.nResolution = 0;
+
+      const result = await new Promise((resolve, reject) => {
+        fn.async(this.handle, imageBuffer, frameParams, (err, res) => {
+          if (err) reject(err);
+          else resolve(res);
+        });
+      });
+
+      if (result !== FTR_TRUE) {
+        return null;
+      }
+
+      const actualSize =
+        frameParams.nImageSize > 0 ? frameParams.nImageSize : bufferSize;
+
+      return imageBuffer.slice(0, actualSize);
+    } catch {
+      return null;
+    }
+  }
+
   async captureFingerprint(maxAttempts = 3, bufferSize = 153600) {
-    return new Promise((resolve) => {
-      let attempts = 0;
-
-      const tryCapture = () => {
-        attempts++;
-        const frame = this.getFrame(bufferSize);
-
-        if (frame && frame.length > 0) {
-          resolve(frame);
-        } else if (attempts < maxAttempts) {
-          setTimeout(tryCapture, 250);
-        } else {
-          resolve(null);
-        }
-      };
-
-      tryCapture();
-    });
+    for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
+      const frame = await this.getFrameAsync(bufferSize);
+      if (frame && frame.length > 0) {
+        return frame;
+      }
+      if (attempts < maxAttempts) {
+        await this.sleep(250);
+      }
+    }
+    return null;
   }
 
   closeDevice() {
