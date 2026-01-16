@@ -125,12 +125,12 @@ function loadScanDLL(dllPath, dllName) {
     }
 
     if (typeof dllPath !== "string") {
-      console.warn(`⚠ Ruta inválida para ${dllName} (no es string)`);
+      console.warn(`[WARN] Ruta inválida para ${dllName} (no es string)`);
       return null;
     }
 
     if (!fileExists(dllPath)) {
-      console.warn(`⚠ ${dllName} no encontrada en: ${dllPath}`);
+      console.warn(`[WARN] ${dllName} no encontrada en: ${dllPath}`);
       return null;
     }
 
@@ -140,7 +140,7 @@ function loadScanDLL(dllPath, dllName) {
     if (detected.arch && detected.arch !== expected) {
       const suggestedNodeArch = detected.arch === "x86" ? "x86 (ia32)" : "x64";
       console.error(
-        `✗ ${dllName} parece ser ${detected.arch} pero tu Node es ${expected}.\n` +
+        `[ERROR] ${dllName} parece ser ${detected.arch} pero tu Node es ${expected}.\n` +
           `  Esto causa el error Win32 193 (Bad EXE format).\n` +
           `  Soluciones posibles:\n` +
           `  - Usar DLLs ${expected} (por ejemplo, carpeta ${expected} del SDK/driver de Futronic).\n` +
@@ -170,11 +170,11 @@ function loadScanDLL(dllPath, dllName) {
       ]),
     };
 
-    console.log(`✓ ${dllName} cargada exitosamente (funciones de escaneo)`);
+    console.log(`[OK] ${dllName} cargada exitosamente (funciones de escaneo)`);
     return library;
   } catch (error) {
     const msg = error?.message || String(error);
-    console.warn(`⚠ Error al cargar ${dllName}:`, msg);
+    console.warn(`[WARN] Error al cargar ${dllName}:`, msg);
     console.warn(`  Ruta intentada: ${dllPath}`);
 
     // Mensaje más claro para el error típico de arquitectura
@@ -208,7 +208,7 @@ if (!ftrScanAPI) {
   const detected = detectPeMachine(ftrAPIPath);
   if (detected.arch && detected.arch !== expected) {
     console.warn(
-      `⚠ FTRAPI.dll parece ser ${detected.arch} pero tu Node es ${expected}. ` +
+      `[WARN] FTRAPI.dll parece ser ${detected.arch} pero tu Node es ${expected}. ` +
         `Si ftrScanAPI.dll ya cargó, la captura puede funcionar igual. ` +
         `Evita mezclar DLLs x86/x64 y usa el mismo paquete (x86 o x64) para ambas.`
     );
@@ -216,8 +216,10 @@ if (!ftrScanAPI) {
 }
 
 if (!ftrScanAPI) {
-  console.error("✗ No se pudo cargar ninguna DLL de escaneo");
-  console.error("⚠ El lector de huellas no estará disponible en el agente");
+  console.error("[ERROR] No se pudo cargar ninguna DLL de escaneo");
+  console.error(
+    "[WARN] El lector de huellas no estará disponible en el agente"
+  );
 }
 
 const FTR_TRUE = 1;

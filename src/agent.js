@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import os from "os";
 import { getScanner } from "./fingerprintScanner.js";
 
 const require = createRequire(import.meta.url);
@@ -83,6 +84,27 @@ function normalizeBaseUrl(value) {
   return trimmed.replace(/\/+$/, "");
 }
 
+function deriveStationIdFromHostname() {
+  const raw =
+    (typeof process.env.COMPUTERNAME === "string" &&
+    process.env.COMPUTERNAME.trim()
+      ? process.env.COMPUTERNAME
+      : null) || os.hostname();
+
+  if (typeof raw !== "string") return null;
+  const host = raw.trim();
+  if (!host) return null;
+
+  // Acepta: PC-2, PC2, PC_2, PC 2 (cualquier combinación de separador)
+  const lower = host.toLowerCase();
+  const match = lower.match(/^pc(?:[-_ ]?)(\d+)$/);
+  if (!match) return null;
+
+  const n = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `pc-${n}`;
+}
+
 function readRuntimeConfig() {
   const fileConfig = safeReadJson(resolvedConfigPath);
   const cfg = fileConfig && typeof fileConfig === "object" ? fileConfig : {};
@@ -120,14 +142,18 @@ function readRuntimeConfig() {
       10_000
   );
 
+  const stationIdFromInputs =
+    typeof stationIdRaw === "string" && stationIdRaw.trim()
+      ? stationIdRaw.trim()
+      : null;
+
+  const derivedStationId = stationIdFromInputs || deriveStationIdFromHostname();
+
   return {
     configExists: Boolean(fileConfig),
     configPath: resolvedConfigPath,
     apiUrl: normalizeBaseUrl(apiUrlRaw),
-    stationId:
-      typeof stationIdRaw === "string" && stationIdRaw.trim()
-        ? stationIdRaw.trim()
-        : null,
+    stationId: derivedStationId,
     agentKey:
       typeof agentKeyRaw === "string" && agentKeyRaw.trim()
         ? agentKeyRaw.trim()

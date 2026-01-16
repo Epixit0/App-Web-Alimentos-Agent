@@ -91,3 +91,16 @@ Campos típicos:
 - `apiUrl`
 - `stationId` (pc-1..pc-6)
 - `agentKey`
+
+### Instalar en varias PCs sin editar `stationId`
+
+Opción recomendada (sin tocar archivos):
+
+- Renombra cada PC con el formato `PC-1`, `PC-2`, `PC-3`, etc.
+- No pongas `stationId` en el config.
+
+El agente detecta automáticamente:
+
+- `PC-2` / `PC2` / `PC_2` / `PC 2` → `pc-2`
+
+Si la PC no está nombrada con ese patrón, entonces sí debes definir `stationId` manualmente en el config.

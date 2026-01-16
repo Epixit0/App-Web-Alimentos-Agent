@@ -1,6 +1,5 @@
 {
   "apiUrl": "https://app-web-alimentos-backend.vercel.app/api",
-  "stationId": "pc-1",
   "agentKey": "PON_AQUI_EL_MISMO_VALOR_DE_FINGERPRINT_AGENT_KEY_EN_VERCEL",
   "pollIntervalMs": 2000,
   "heartbeatIntervalMs": 10000
