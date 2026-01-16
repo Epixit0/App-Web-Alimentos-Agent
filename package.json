@@ -1,0 +1,17 @@
+{
+  "name": "marcaribe-fingerprint-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/agent.js",
+  "scripts": {
+    "start": "node src/agent.js",
+    "start:config": "node src/agent.js --config %PROGRAMDATA%\\MarCaribeFingerprintAgent\\config.json"
+  },
+  "dependencies": {
+    "ffi-napi": "^4.0.3",
+    "node-fetch": "^2.6.12",
+    "ref-napi": "^3.0.3",
+    "ref-struct-napi": "^1.1.1"
+  }
+}
