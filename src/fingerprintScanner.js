@@ -27,6 +27,62 @@ try {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function getExpectedWindowsDllArch() {
+  // Node en Windows suele ser x64 en Win10; si fuera x86, process.arch será ia32.
+  if (process.arch === "x64") return "x64";
+  if (process.arch === "ia32") return "x86";
+  return process.arch;
+}
+
+function readUInt16LESafe(buffer, offset) {
+  if (!Buffer.isBuffer(buffer)) return null;
+  if (offset < 0 || offset + 2 > buffer.length) return null;
+  return buffer.readUInt16LE(offset);
+}
+
+function readUInt32LESafe(buffer, offset) {
+  if (!Buffer.isBuffer(buffer)) return null;
+  if (offset < 0 || offset + 4 > buffer.length) return null;
+  return buffer.readUInt32LE(offset);
+}
+
+function detectPeMachine(filePath) {
+  // Detecta arquitectura (x86/x64) leyendo header PE.
+  // Retorna: { arch: 'x86'|'x64'|null, machine: number|null, error?: string }
+  try {
+    const data = fs.readFileSync(filePath);
+    if (data.length < 0x40) return { arch: null, machine: null, error: "Archivo muy pequeño" };
+    // DOS header debe iniciar con 'MZ'
+    if (data[0] !== 0x4d || data[1] !== 0x5a) {
+      return { arch: null, machine: null, error: "No es un PE válido (sin MZ)" };
+    }
+    const e_lfanew = readUInt32LESafe(data, 0x3c);
+    if (e_lfanew == null) return { arch: null, machine: null, error: "No se pudo leer e_lfanew" };
+    if (e_lfanew + 6 > data.length) return { arch: null, machine: null, error: "Header PE fuera de rango" };
+    // Firma PE = 'PE\0\0'
+    if (
+      data[e_lfanew] !== 0x50 ||
+      data[e_lfanew + 1] !== 0x45 ||
+      data[e_lfanew + 2] !== 0x00 ||
+      data[e_lfanew + 3] !== 0x00
+    ) {
+      return { arch: null, machine: null, error: "No es un PE válido (sin firma PE)" };
+    }
+    const machine = readUInt16LESafe(data, e_lfanew + 4);
+    if (machine == null) return { arch: null, machine: null, error: "No se pudo leer machine" };
+
+    // Valores comunes:
+    // 0x014c = IMAGE_FILE_MACHINE_I386 (x86)
+    // 0x8664 = IMAGE_FILE_MACHINE_AMD64 (x64)
+    let arch = null;
+    if (machine === 0x014c) arch = "x86";
+    if (machine === 0x8664) arch = "x64";
+    return { arch, machine };
+  } catch (error) {
+    return { arch: null, machine: null, error: error?.message || String(error) };
+  }
+}
+
 // Definir tipos para FFI (solo si están disponibles)
 const FTRHANDLE = nativeDepsAvailable ? ref.refType(ref.types.void) : null;
 const FTR_PVOID = nativeDepsAvailable ? ref.refType(ref.types.void) : null;
@@ -61,8 +117,25 @@ function loadScanDLL(dllPath, dllName) {
       return null;
     }
 
+    if (typeof dllPath !== "string") {
+      console.warn(`⚠ Ruta inválida para ${dllName} (no es string)`);
+      return null;
+    }
+
     if (!fileExists(dllPath)) {
       console.warn(`⚠ ${dllName} no encontrada en: ${dllPath}`);
+      return null;
+    }
+
+    // Validar arquitectura de la DLL vs arquitectura del proceso
+    const expected = getExpectedWindowsDllArch();
+    const detected = detectPeMachine(dllPath);
+    if (detected.arch && detected.arch !== expected) {
+      console.error(
+        `✗ ${dllName} parece ser ${detected.arch} pero tu Node es ${expected}.\n` +
+          `  Esto causa el error Win32 193 (Bad EXE format).\n` +
+          `  Solución: copia las DLLs de la carpeta x64 del SDK/driver de Futronic.`
+      );
       return null;
     }
 
@@ -78,8 +151,18 @@ function loadScanDLL(dllPath, dllName) {
     console.log(`✓ ${dllName} cargada exitosamente (funciones de escaneo)`);
     return library;
   } catch (error) {
-    console.warn(`⚠ Error al cargar ${dllName}:`, error.message);
+    const msg = error?.message || String(error);
+    console.warn(`⚠ Error al cargar ${dllName}:`, msg);
     console.warn(`  Ruta intentada: ${dllPath}`);
+
+    // Mensaje más claro para el error típico de arquitectura
+    if (/Win32 error 193/i.test(msg) || /error 193/i.test(msg)) {
+      console.warn(
+        `  Suele significar DLL de 32 bits en Node 64 bits (o viceversa).\n` +
+          `  Tu Node: ${getExpectedWindowsDllArch()}`
+      );
+    }
+
     if (error.stack) {
       console.warn(
         `  Stack: ${error.stack.split("\n").slice(0, 3).join("\n")}`
