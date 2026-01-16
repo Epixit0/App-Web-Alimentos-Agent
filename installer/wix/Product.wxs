@@ -14,7 +14,7 @@
     Language="1033"
     Version="1.0.0"
     Manufacturer="MarCaribe"
-    UpgradeCode="PUT-YOUR-UPGRADE-GUID-HERE">
+    UpgradeCode="{b0ae7f0d-cd24-404d-a30f-969decb5690e}">
 
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
 
@@ -27,7 +27,9 @@
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFilesFolder">
         <Directory Id="COMPANYDIR" Name="MarCaribe">
-          <Directory Id="INSTALLFOLDER" Name="FingerprintAgent" />
+          <Directory Id="INSTALLFOLDER" Name="FingerprintAgent">
+            <Directory Id="SERVICEDIR" Name="service" />
+          </Directory>
         </Directory>
       </Directory>
 
@@ -47,20 +49,16 @@
 
     <!-- Config por defecto (no sobrescribe si ya existe) -->
     <DirectoryRef Id="CFGDIR">
-      <Component Id="ConfigComponent" Guid="*">
-        <File Id="DefaultConfig" Source="..\dist\payload\config.example.json" Name="config.json" NeverOverwrite="yes" KeyPath="yes" />
+      <Component Id="ConfigComponent" Guid="*" NeverOverwrite="yes" Permanent="yes">
+        <File Id="DefaultConfig" Source="..\dist\payload\config.example.json" Name="config.json" KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
     <!-- Servicio Windows: corre node.exe + app/src/agent.js con argumento config a ProgramData -->
-    <DirectoryRef Id="INSTALLFOLDER">
+    <DirectoryRef Id="SERVICEDIR">
       <Component Id="ServiceComponent" Guid="*">
-        <Directory Id="SERVICEDIR" Name="service">
-          <Component Id="ServiceFiles" Guid="*">
-            <File Id="WinSWExe" Source="..\dist\payload\service\MarCaribeFingerprintAgent.exe" KeyPath="yes" />
-            <File Id="WinSWXml" Source="..\dist\payload\service\MarCaribeFingerprintAgent.xml" />
-          </Component>
-        </Directory>
+        <File Id="WinSWExe" Source="..\dist\payload\service\MarCaribeFingerprintAgent.exe" KeyPath="yes" />
+        <File Id="WinSWXml" Source="..\dist\payload\service\MarCaribeFingerprintAgent.xml" />
 
         <!-- El servicio apunta al wrapper (WinSW). La configuración (XML) define el comando real. -->
         <ServiceInstall
