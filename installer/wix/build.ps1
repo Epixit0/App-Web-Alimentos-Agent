@@ -37,7 +37,7 @@ function Invoke-Tool {
   }
 }
 
-function Normalize-HeatPayloadVar {
+function Normalize-HeatOutput {
   param(
     [Parameter(Mandatory=$true)][string]$Path
   )
@@ -48,8 +48,14 @@ function Normalize-HeatPayloadVar {
   # En algunos entornos, heat puede emitir $(PayloadDir) (sin prefijo). Candle espera $(var.PayloadDir).
   if ($content -match '\$\(PayloadDir\)') {
     $content = $content -replace '\$\(PayloadDir\)', '$(var.PayloadDir)'
-    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
   }
+
+  # heat a veces deja Guid placeholders; Guid="*" es válido y permite compilar.
+  if ($content -match 'Guid="PUT-GUID-HERE"') {
+    $content = $content -replace 'Guid="PUT-GUID-HERE"', 'Guid="*"'
+  }
+
+  Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
 }
 
 $payloadRoot = Join-Path $RepoRoot "installer\dist\payload"
@@ -74,11 +80,12 @@ Invoke-Tool $heat @(
   "-nologo",
   "-cg", "AppComponentGroup",
   "-dr", "INSTALLFOLDER",
+  "-gg",
   "-sreg", "-scom", "-sfrag",
   "-var", "var.PayloadDir",
   "-out", $harvestAppWxs
 )
-Normalize-HeatPayloadVar -Path $harvestAppWxs
+Normalize-HeatOutput -Path $harvestAppWxs
 
 Write-Host "Harvesting node/ with heat..." -ForegroundColor Cyan
 Invoke-Tool $heat @(
@@ -86,11 +93,12 @@ Invoke-Tool $heat @(
   "-nologo",
   "-cg", "NodeComponentGroup",
   "-dr", "INSTALLFOLDER",
+  "-gg",
   "-sreg", "-scom", "-sfrag",
   "-var", "var.PayloadDir",
   "-out", $harvestNodeWxs
 )
-Normalize-HeatPayloadVar -Path $harvestNodeWxs
+Normalize-HeatOutput -Path $harvestNodeWxs
 
 # Candle/Light
 $obj1 = Join-Path $outDir "Product.wixobj"
