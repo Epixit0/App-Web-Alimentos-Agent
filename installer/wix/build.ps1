@@ -6,8 +6,16 @@ $ErrorActionPreference = "Stop"
 
 $wixBin = ${env:WIX}
 if (-not $wixBin) {
-  # Default WiX v3 path (ajusta si aplica)
-  $wixBin = "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+  # Rutas comunes de WiX v3
+  $candidates = @(
+    "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+    "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+  )
+  $wixBin = ($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)
+}
+
+if (-not $wixBin) {
+  throw "No se encontró WiX bin. Instala WiX Toolset v3.x o setea env:WIX al path bin."
 }
 
 $candle = Join-Path $wixBin "candle.exe"
