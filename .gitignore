@@ -13,3 +13,7 @@ Desktop.ini
 # Build / packaging output
 /dist/
 /out/
+
+# MSI installer staging
+/installer/dist/
+/installer/assets/node/

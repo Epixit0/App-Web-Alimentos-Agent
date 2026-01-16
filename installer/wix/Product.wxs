@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <!--
+    IMPORTANTE:
+    - Cambia Manufacturer, Version y UpgradeCode.
+    - Genera UpgradeCode (GUID) 1 vez y no lo cambies nunca.
+  -->
+
+  <Product
+    Id="*"
+    Name="MarCaribe Fingerprint Agent"
+    Language="1033"
+    Version="1.0.0"
+    Manufacturer="MarCaribe"
+    UpgradeCode="PUT-YOUR-UPGRADE-GUID-HERE">
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+
+    <MajorUpgrade DowngradeErrorMessage="Ya hay una versión más nueva instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+
+    <!-- Directorios -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="COMPANYDIR" Name="MarCaribe">
+          <Directory Id="INSTALLFOLDER" Name="FingerprintAgent" />
+        </Directory>
+      </Directory>
+
+      <!-- C:\ProgramData -->
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="CFGDIR" Name="MarCaribeFingerprintAgent" />
+      </Directory>
+    </Directory>
+
+    <!-- Archivos: se generan con Heat (ver build.ps1) -->
+    <Feature Id="MainFeature" Title="Fingerprint Agent" Level="1">
+      <ComponentGroupRef Id="AppComponentGroup" />
+      <ComponentGroupRef Id="NodeComponentGroup" />
+      <ComponentRef Id="ConfigComponent" />
+      <ComponentRef Id="ServiceComponent" />
+    </Feature>
+
+    <!-- Config por defecto (no sobrescribe si ya existe) -->
+    <DirectoryRef Id="CFGDIR">
+      <Component Id="ConfigComponent" Guid="*">
+        <File Id="DefaultConfig" Source="..\dist\payload\config.example.json" Name="config.json" NeverOverwrite="yes" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- Servicio Windows: corre node.exe + app/src/agent.js con --config ProgramData -->
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="ServiceComponent" Guid="*">
+        <Directory Id="SERVICEDIR" Name="service">
+          <Component Id="ServiceFiles" Guid="*">
+            <File Id="WinSWExe" Source="..\dist\payload\service\MarCaribeFingerprintAgent.exe" KeyPath="yes" />
+            <File Id="WinSWXml" Source="..\dist\payload\service\MarCaribeFingerprintAgent.xml" />
+          </Component>
+        </Directory>
+
+        <!-- El servicio apunta al wrapper (WinSW). La configuración (XML) define el comando real. -->
+        <ServiceInstall
+          Id="MarCaribeFingerprintAgentService"
+          Name="MarCaribeFingerprintAgent"
+          DisplayName="MarCaribe Fingerprint Agent"
+          Description="Servicio biométrico MarCaribe (Futronic)"
+          Start="auto"
+          Type="ownProcess"
+          ErrorControl="normal"
+          Vital="yes"
+          Account="LocalSystem"
+          />
+
+        <ServiceControl
+          Id="StartService"
+          Name="MarCaribeFingerprintAgent"
+          Start="install"
+          Stop="both"
+          Remove="uninstall"
+          Wait="yes" />
+      </Component>
+    </DirectoryRef>
+
+  </Product>
+
+  <!-- Heat genera este ComponentGroup -->
+  <Fragment>
+    <ComponentGroup Id="AppComponentGroup" />
+    <ComponentGroup Id="NodeComponentGroup" />
+  </Fragment>
+
+</Wix>

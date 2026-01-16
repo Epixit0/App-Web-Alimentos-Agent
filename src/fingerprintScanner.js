@@ -154,13 +154,20 @@ function loadScanDLL(dllPath, dllName) {
     // En x86 Windows normalmente Futronic usa stdcall.
     // La sintaxis clásica hace explícita la convención y evita ambigüedades.
     const library = {
-      ftrScanOpenDevice: lib.func("__stdcall", "ftrScanOpenDevice", "void *", []),
+      ftrScanOpenDevice: lib.func(
+        "__stdcall",
+        "ftrScanOpenDevice",
+        "void *",
+        []
+      ),
       ftrScanGetFrame: lib.func("__stdcall", "ftrScanGetFrame", "int", [
         "void *",
         "void *",
         "FTRSCAN_FRAME_PARAMETERS *",
       ]),
-      ftrScanCloseDevice: lib.func("__stdcall", "ftrScanCloseDevice", "void", ["void *"]),
+      ftrScanCloseDevice: lib.func("__stdcall", "ftrScanCloseDevice", "void", [
+        "void *",
+      ]),
     };
 
     console.log(`✓ ${dllName} cargada exitosamente (funciones de escaneo)`);
