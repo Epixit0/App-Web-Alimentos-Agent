@@ -32,6 +32,38 @@ Luego revisa:
 
 - `https://app-web-alimentos-backend.vercel.app/api/fingerprint/stations`
 
+## Errores comunes en Windows (npm / node-gyp)
+
+### `"call" no se reconoce como un comando...` / aparece `call "call" ... preprocess_asm.cmd`
+
+Si en el log de `npm install` ves algo como:
+
+- `call "call" ".../preprocess_asm.cmd" ...`
+
+Entonces casi seguro tu variable de entorno `ComSpec` está mal configurada.
+
+Debe ser:
+
+- `C:\Windows\System32\cmd.exe`
+
+Arreglo rápido (PowerShell):
+
+- `setx ComSpec "%SystemRoot%\System32\cmd.exe"`
+
+Luego cierra y abre la consola, y vuelve a ejecutar:
+
+- `npm install`
+
+### `npm WARN cleanup ... EPERM: operation not permitted, rmdir ...`
+
+Suele pasar cuando algún proceso (o antivirus) está usando archivos dentro de `node_modules`.
+
+Pasos recomendados:
+
+- Cierra el agente si está ejecutándose.
+- En PowerShell: `taskkill /f /im node.exe` (solo si no tienes otros Node corriendo)
+- Borra `node_modules` manualmente (o reinicia la PC si está “bloqueado”).
+
 ## DLLs
 
 Para capturar, el agente necesita las DLLs de Futronic en:
