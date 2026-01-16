@@ -149,16 +149,18 @@ function loadScanDLL(dllPath, dllName) {
       return null;
     }
 
-    const callConv = "__stdcall";
     const lib = koffi.load(dllPath);
+
+    // En x86 Windows normalmente Futronic usa stdcall.
+    // La sintaxis clásica hace explícita la convención y evita ambigüedades.
     const library = {
-      ftrScanOpenDevice: lib.func(`void* ${callConv} ftrScanOpenDevice()`),
-      ftrScanGetFrame: lib.func(
-        `int ${callConv} ftrScanGetFrame(void* hDevice, void* pBuffer, FTRSCAN_FRAME_PARAMETERS* pParams)`
-      ),
-      ftrScanCloseDevice: lib.func(
-        `void ${callConv} ftrScanCloseDevice(void* hDevice)`
-      ),
+      ftrScanOpenDevice: lib.func("__stdcall", "ftrScanOpenDevice", "void *", []),
+      ftrScanGetFrame: lib.func("__stdcall", "ftrScanGetFrame", "int", [
+        "void *",
+        "void *",
+        "FTRSCAN_FRAME_PARAMETERS *",
+      ]),
+      ftrScanCloseDevice: lib.func("__stdcall", "ftrScanCloseDevice", "void", ["void *"]),
     };
 
     console.log(`✓ ${dllName} cargada exitosamente (funciones de escaneo)`);
@@ -310,19 +312,26 @@ class FingerprintScanner {
 
       const imageBuffer = Buffer.alloc(bufferSize);
 
-      const frameParams = new FTRSCAN_FRAME_PARAMETERS();
-      frameParams.nWidth = 0;
-      frameParams.nHeight = 0;
-      // Muchos SDKs usan este campo como IN/OUT: tamaño del buffer disponible.
-      // Si se deja en 0, puede fallar o devolver 0 bytes.
-      frameParams.nImageSize = bufferSize;
-      frameParams.nResolution = 0;
+      // Con Koffi, para argumentos `Struct *` es más confiable pasar un objeto
+      // (Koffi maneja la memoria y escribe de vuelta los campos).
+      const frameParams = {
+        nWidth: 0,
+        nHeight: 0,
+        nImageSize: bufferSize,
+        nResolution: 0,
+      };
 
       const result = ftrScanAPI.ftrScanGetFrame(
         this.handle,
         imageBuffer,
         frameParams
       );
+
+      if (process.env.DEBUG_FINGERPRINT === "1") {
+        console.log(
+          `[DEBUG_FINGERPRINT] ftrScanGetFrame result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`
+        );
+      }
 
       if (result !== FTR_TRUE) {
         return null;
@@ -341,7 +350,8 @@ class FingerprintScanner {
     try {
       if (!ftrScanAPI) return null;
       if (!FTRSCAN_FRAME_PARAMETERS) return null;
-      if (!this.isOpen || !this.handle || this.isNullHandle(this.handle)) return null;
+      if (!this.isOpen || !this.handle || this.isNullHandle(this.handle))
+        return null;
 
       const fn = ftrScanAPI.ftrScanGetFrame;
       if (!fn || typeof fn.async !== "function") {
@@ -351,11 +361,12 @@ class FingerprintScanner {
 
       const imageBuffer = Buffer.alloc(bufferSize);
 
-      const frameParams = new FTRSCAN_FRAME_PARAMETERS();
-      frameParams.nWidth = 0;
-      frameParams.nHeight = 0;
-      frameParams.nImageSize = bufferSize;
-      frameParams.nResolution = 0;
+      const frameParams = {
+        nWidth: 0,
+        nHeight: 0,
+        nImageSize: bufferSize,
+        nResolution: 0,
+      };
 
       const result = await new Promise((resolve, reject) => {
         fn.async(this.handle, imageBuffer, frameParams, (err, res) => {
@@ -363,6 +374,12 @@ class FingerprintScanner {
           else resolve(res);
         });
       });
+
+      if (process.env.DEBUG_FINGERPRINT === "1") {
+        console.log(
+          `[DEBUG_FINGERPRINT] ftrScanGetFrame.async result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`
+        );
+      }
 
       if (result !== FTR_TRUE) {
         return null;
