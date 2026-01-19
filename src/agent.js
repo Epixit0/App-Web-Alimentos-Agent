@@ -364,7 +364,7 @@ while (true) {
         if (assigned) {
           cachedStationId = assigned;
           stationId = assigned;
-          console.log(`Estación asignada automáticamente: ${assigned}`);
+          console.log(`[INFO] Estacion asignada automaticamente: ${assigned}`);
         }
       } catch (e) {
         // Si el backend aún no tiene el endpoint, se verá aquí.
