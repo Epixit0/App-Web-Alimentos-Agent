@@ -4,7 +4,13 @@ import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import os from "os";
 import { execFileSync } from "child_process";
+import zlib from "zlib";
 import { getScanner } from "./fingerprintScanner.js";
+import {
+  getMatcherInfo,
+  isMatcherAvailable,
+  verifyTemplate,
+} from "./fingerprintMatcher.js";
 
 const require = createRequire(import.meta.url);
 
@@ -126,7 +132,7 @@ function getStableMachineId() {
           windowsHide: true,
           timeout: 2000,
           stdio: ["ignore", "pipe", "ignore"],
-        }
+        },
       );
       const guid = parseRegQueryValue(out, "MachineGuid");
       if (guid) return `machineguid:${guid}`;
@@ -162,7 +168,7 @@ function readRuntimeConfig() {
     (typeof args.pollIntervalMs === "string" ? args.pollIntervalMs : null) ||
       (typeof cfg.pollIntervalMs === "number" ? cfg.pollIntervalMs : null) ||
       process.env.POLL_INTERVAL_MS ||
-      2000
+      2000,
   );
 
   const heartbeatIntervalMs = Number(
@@ -173,7 +179,7 @@ function readRuntimeConfig() {
         ? cfg.heartbeatIntervalMs
         : null) ||
       process.env.HEARTBEAT_INTERVAL_MS ||
-      10_000
+      10_000,
   );
 
   const stationIdFromInputs =
@@ -207,8 +213,25 @@ if (!nodeFetch) {
 }
 
 console.log(
-  `Fingerprint agent iniciado. Config esperado en: ${resolvedConfigPath}`
+  `Fingerprint agent iniciado. Config esperado en: ${resolvedConfigPath}`,
 );
+
+try {
+  const info = getMatcherInfo();
+  if (info.available) {
+    console.log(
+      `[OK] Motor de comparación disponible. dllPath=${info.dllPath} exports=${JSON.stringify(info.names)}`,
+    );
+  } else {
+    console.warn(
+      `[WARN] Motor de comparación NO disponible. dllPath=${info.dllPath} exports=${JSON.stringify(info.names)} loadError=${info.loadError}`,
+    );
+  }
+} catch (e) {
+  console.warn(
+    `[WARN] No se pudo inicializar el motor de comparación: ${e?.message || String(e)}`,
+  );
+}
 
 const MACHINE_ID = getStableMachineId();
 const HOSTNAME = os.hostname();
@@ -277,9 +300,13 @@ async function nextJob(runtime) {
 }
 
 async function submitCapture(runtime, jobId, buffer) {
+  const payload = Buffer.isBuffer(buffer)
+    ? { templateBase64: buffer.toString("base64") }
+    : buffer;
+
   return api(runtime, `/fingerprint/agent/jobs/${jobId}/capture`, {
     method: "POST",
-    body: JSON.stringify({ templateBase64: buffer.toString("base64") }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -288,6 +315,115 @@ async function failJob(runtime, jobId, error) {
     method: "POST",
     body: JSON.stringify({ error }),
   });
+}
+
+async function listTemplates(runtime, params) {
+  const qs = new URLSearchParams(params).toString();
+  const pathname = qs
+    ? `/fingerprint/agent/templates?${qs}`
+    : `/fingerprint/agent/templates`;
+  const data = await api(runtime, pathname);
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    nextCursor: typeof data?.nextCursor === "string" ? data.nextCursor : null,
+  };
+}
+
+function decodeTemplateFromApi(item) {
+  const b64 = item?.templateBase64Gzip;
+  if (typeof b64 !== "string" || !b64) return null;
+  const gz = Buffer.from(b64, "base64");
+  if (gz.length >= 2 && gz[0] === 0x1f && gz[1] === 0x8b) {
+    try {
+      return zlib.gunzipSync(gz);
+    } catch {
+      return null;
+    }
+  }
+  return gz;
+}
+
+async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
+  if (!isMatcherAvailable()) {
+    const info = getMatcherInfo();
+    return {
+      duplicate: false,
+      error:
+        "El agente no tiene disponible el motor de comparación (FTRAPI.dll/exports). " +
+        `dllPath=${info.dllPath} exports=${JSON.stringify(info.names)}`,
+    };
+  }
+
+  let cursor = null;
+  for (;;) {
+    const { items, nextCursor } = await listTemplates(runtime, {
+      excludeWorkerId: workerId,
+      limit: "200",
+      ...(cursor ? { cursor } : {}),
+    });
+
+    for (const item of items) {
+      const base = decodeTemplateFromApi(item);
+      if (!base) continue;
+
+      const result = await verifyTemplate(base, capturedTemplate);
+      if (result?.matched) {
+        const workerName = item?.workerName || item?.workerId || "desconocido";
+        return {
+          duplicate: true,
+          message: `Esta huella ya ha sido registrada por otro trabajador (${workerName}).`,
+          score: result?.score,
+        };
+      }
+    }
+
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+
+  return { duplicate: false };
+}
+
+async function verifyForWorker(runtime, workerId, capturedTemplate) {
+  if (!isMatcherAvailable()) {
+    const info = getMatcherInfo();
+    return {
+      matched: false,
+      error:
+        "El agente no tiene disponible el motor de comparación (FTRAPI.dll/exports). " +
+        `dllPath=${info.dllPath} exports=${JSON.stringify(info.names)}`,
+    };
+  }
+
+  let cursor = null;
+  let best = { matched: false, score: -Infinity };
+
+  for (;;) {
+    const { items, nextCursor } = await listTemplates(runtime, {
+      workerId,
+      limit: "200",
+      ...(cursor ? { cursor } : {}),
+    });
+
+    for (const item of items) {
+      const base = decodeTemplateFromApi(item);
+      if (!base) continue;
+
+      const result = await verifyTemplate(base, capturedTemplate);
+      if (result?.matched) {
+        return { matched: true, score: result?.score };
+      }
+      if (result?.score != null && result.score > (best.score ?? -Infinity)) {
+        best = { matched: false, score: result.score };
+      }
+    }
+
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+
+  if (best.score !== -Infinity) return best;
+  return { matched: false };
 }
 
 async function capture() {
@@ -345,7 +481,7 @@ while (true) {
     if (now - lastMissingConfigLogAt > 10_000) {
       console.error(
         `Config incompleta. Falta: ${missing.join(", ")}. ` +
-          `El servicio seguirá corriendo y reintentará. Path: ${runtime.configPath}`
+          `El servicio seguirá corriendo y reintentará. Path: ${runtime.configPath}`,
       );
       lastMissingConfigLogAt = now;
     }
@@ -378,7 +514,7 @@ while (true) {
     if (now - lastMissingConfigLogAt > 10_000) {
       console.error(
         `Config incompleta. Falta: stationId/STATION_ID (se intentó auto-asignación). ` +
-          `El servicio seguirá corriendo y reintentará. Path: ${runtime.configPath}`
+          `El servicio seguirá corriendo y reintentará. Path: ${runtime.configPath}`,
       );
       lastMissingConfigLogAt = now;
     }
@@ -416,8 +552,42 @@ while (true) {
 
   try {
     const template = await capture();
-    await submitCapture(effectiveRuntime, job._id, template);
-    console.log(`Job completado: ${job._id}`);
+
+    if (job.type === "enroll") {
+      const dupe = await findDuplicateForEnroll(
+        effectiveRuntime,
+        job.workerId,
+        template,
+      );
+
+      if (dupe?.error) {
+        await failJob(effectiveRuntime, job._id, dupe.error);
+        console.error(`Job falló: ${job._id}: ${dupe.error}`);
+      } else if (dupe?.duplicate) {
+        await failJob(effectiveRuntime, job._id, dupe.message);
+        console.error(`Job falló: ${job._id}: ${dupe.message}`);
+      } else {
+        await submitCapture(effectiveRuntime, job._id, {
+          templateBase64: template.toString("base64"),
+          agentCheckedDuplicates: true,
+        });
+        console.log(`Job completado: ${job._id}`);
+      }
+    } else if (job.type === "verify") {
+      const result = await verifyForWorker(
+        effectiveRuntime,
+        job.workerId,
+        template,
+      );
+      await submitCapture(effectiveRuntime, job._id, {
+        agentVerified: true,
+        verifyResult: result,
+      });
+      console.log(`Job completado: ${job._id}`);
+    } else {
+      await submitCapture(effectiveRuntime, job._id, template);
+      console.log(`Job completado: ${job._id}`);
+    }
   } catch (e) {
     console.error(`Job falló: ${job._id}: ${e.message}`);
     try {
