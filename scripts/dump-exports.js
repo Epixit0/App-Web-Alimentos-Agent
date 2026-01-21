@@ -111,6 +111,24 @@ function guessStdcallArgBytesAt(buf, fileOffset, maxScan = 2048) {
   return last;
 }
 
+function guessStdcallArgBytesInRange(buf, startOff, endOff) {
+  if (startOff == null || endOff == null) return null;
+  if (startOff < 0 || startOff >= buf.length) return null;
+  const end = Math.min(buf.length, Math.max(startOff, endOff));
+  let last = null;
+  // Busca el último "ret imm16" (C2 xx xx) dentro del rango.
+  for (let i = startOff; i + 2 < end; i += 1) {
+    if (buf[i] === 0xc2) {
+      last = buf.readUInt16LE(i + 1);
+    }
+  }
+  // Filtra valores absurdos (falsos positivos). En x86 stdcall suele ser múltiplo de 4.
+  if (last == null) return null;
+  if (last > 128) return null;
+  if (last % 4 !== 0) return null;
+  return last;
+}
+
 function listExports(buf) {
   const info = getPeInfo(buf);
   if (!info.ok) return { ok: false, error: info.error };
@@ -144,6 +162,21 @@ function listExports(buf) {
   if (ordOff == null) return { ok: false, error: "No AddressOfNameOrdinals" };
   if (funcsOff == null) return { ok: false, error: "No AddressOfFunctions" };
 
+  // Lista de RVAs de todas las funciones exportadas (por índice de ordinal)
+  const allFuncRvas = [];
+  for (let i = 0; i < numberOfFunctions; i += 1) {
+    const rva = readU32(buf, funcsOff + i * 4);
+    if (typeof rva === "number" && rva > 0) allFuncRvas.push(rva);
+  }
+  // Ordena y de-dup
+  allFuncRvas.sort((a, b) => a - b);
+  const uniqueFuncRvas = [];
+  for (const rva of allFuncRvas) {
+    if (uniqueFuncRvas.length === 0 || uniqueFuncRvas[uniqueFuncRvas.length - 1] !== rva) {
+      uniqueFuncRvas.push(rva);
+    }
+  }
+
   const exports = [];
   for (let i = 0; i < numberOfNames; i += 1) {
     const nameRva = readU32(buf, namesOff + i * 4);
@@ -161,17 +194,41 @@ function listExports(buf) {
     const funcOff =
       funcRva != null ? rvaToFileOffset(buf, info.peOffset, funcRva) : null;
 
+    // Rango aproximado de la función: hasta el siguiente RVA exportado.
+    let nextRva = null;
+    if (funcRva != null) {
+      // búsqueda lineal es OK (solo 31 exports en este caso)
+      for (const candidate of uniqueFuncRvas) {
+        if (candidate > funcRva) {
+          nextRva = candidate;
+          break;
+        }
+      }
+    }
+    const nextOff =
+      nextRva != null ? rvaToFileOffset(buf, info.peOffset, nextRva) : null;
+    const rangeEndOff =
+      nextOff != null && funcOff != null && nextOff > funcOff
+        ? nextOff
+        : funcOff != null
+          ? Math.min(buf.length, funcOff + 4096)
+          : null;
+
     exports.push({
       name,
       ordinalIndex: ordinalIndex ?? null,
       rva: funcRva ?? null,
       fileOffset: funcOff ?? null,
-      stdcallArgBytes: guessStdcallArgBytesAt(buf, funcOff, 2048),
+      stdcallArgBytes: guessStdcallArgBytesInRange(buf, funcOff, rangeEndOff),
     });
   }
 
   exports.sort((a, b) => a.name.localeCompare(b.name));
-  return { ok: true, arch: info.arch, exports };
+  return {
+    ok: true,
+    arch: info.arch,
+    exports,
+  };
 }
 
 const dllPath = process.argv[2];
