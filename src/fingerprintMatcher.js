@@ -495,6 +495,20 @@ export async function createTemplateFromDevice(
         if (tpl) return tpl;
       }
 
+      // 1.5) Algunas builds aceptan handle NULL (dispositivo/contexto implícito).
+      // Esto es seguro de probar y nos ayuda a diagnosticar incompatibilidad de handle.
+      const tryNullHandle =
+        String(process.env.FTR_ENROLL_TRY_NULL_HANDLE || "1").trim() === "1";
+      if (tryNullHandle) {
+        const tplNull = await attemptEnroll(
+          null,
+          attempt,
+          "null-handle",
+          purposeValue,
+        );
+        if (tplNull) return tplNull;
+      }
+
       // 2) Si falla, reintenta abriendo el device desde este mismo DLL (FTRAPI.dll)
       if (cached.ftrScanOpenDevice && cached.ftrScanCloseDevice) {
         let tmpHandle = null;
