@@ -290,6 +290,30 @@ function loadMatcher() {
       loadedLib.func("__stdcall", name, "int", ["void *", "int", "FTR_DATA *"]),
   );
 
+  const enrollX = resolveFunction(
+    lib,
+    "FTREnrollX",
+    [
+      "FTREnrollX",
+      "FTR_EnrollX",
+      "FTREnrollXA",
+      "FTR_EnrollXA",
+      "_FTREnrollX@16",
+      "FTREnrollX@16",
+      "_FTR_EnrollX@16",
+      "FTR_EnrollX@16",
+    ],
+    (loadedLib, name) =>
+      // Según el dump actual: stdcallArgBytes=16 (4 args).
+      // Sin headers, modelamos el 4º argumento como puntero opcional (NULL suele ser aceptable).
+      loadedLib.func("__stdcall", name, "int", [
+        "void *",
+        "int",
+        "FTR_DATA *",
+        "void *",
+      ]),
+  );
+
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
 
@@ -338,6 +362,7 @@ function loadMatcher() {
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
     FTREnroll: enroll?.fn || null,
+    FTREnrollX: enrollX?.fn || null,
     ftrScanOpenDevice: scanOpen?.fn || null,
     ftrScanCloseDevice: scanClose?.fn || null,
     names: {
@@ -346,6 +371,7 @@ function loadMatcher() {
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
       FTREnroll: enroll?.name || null,
+      FTREnrollX: enrollX?.name || null,
       ftrScanOpenDevice: scanOpen?.name || null,
       ftrScanCloseDevice: scanClose?.name || null,
     },
@@ -365,7 +391,7 @@ export function isMatcherAvailable() {
 
 export function isEnrollAvailable() {
   if (!cached) cached = loadMatcher();
-  return Boolean(cached && cached.FTREnroll);
+  return Boolean(cached && (cached.FTREnroll || cached.FTREnrollX));
 }
 
 export function getMatcherInfo() {
@@ -398,7 +424,7 @@ export async function createTemplateFromDevice(
 ) {
   if (!cached) cached = loadMatcher();
 
-  if (!cached || !cached.FTREnroll) {
+  if (!cached || (!cached.FTREnroll && !cached.FTREnrollX)) {
     const info = getMatcherInfo();
     const err = new Error(
       "No está disponible FTREnroll en la DLL (no se puede generar template).",
@@ -459,18 +485,75 @@ export async function createTemplateFromDevice(
     const outBuffer = Buffer.alloc(templateBufferSize);
     const out = { dwSize: templateBufferSize, pData: outBuffer };
 
-    // IMPORTANT: FTREnroll recibe FTR_DATA*; hay que pasar un puntero real.
-    const result = cached.FTREnroll(
-      handle,
-      purposeValue,
-      koffi.as(out, "FTR_DATA *"),
-    );
+    const forceEnrollX =
+      String(process.env.FTR_ENROLL_FORCE_X || "").trim() === "1";
+    const hasEnroll = Boolean(cached.FTREnroll);
+    const hasEnrollX = Boolean(cached.FTREnrollX);
+    const useEnrollXFirst = hasEnrollX && (forceEnrollX || !hasEnroll);
+
+    const callEnroll = () =>
+      cached.FTREnroll(handle, purposeValue, koffi.as(out, "FTR_DATA *"));
+    const callEnrollX = () => {
+      // 4º argumento desconocido: por defecto NULL.
+      // Permite override como entero (0/1/...) por si la DLL espera flags.
+      const arg4Raw = process.env.FTR_ENROLLX_ARG4;
+      const arg4Num = Number(arg4Raw);
+      const arg4 =
+        typeof arg4Raw === "string" &&
+        arg4Raw.trim() !== "" &&
+        Number.isFinite(arg4Num)
+          ? arg4Num
+          : null;
+
+      return cached.FTREnrollX(
+        handle,
+        purposeValue,
+        koffi.as(out, "FTR_DATA *"),
+        arg4,
+      );
+    };
+
+    // IMPORTANT: FTREnroll/FTREnrollX reciben FTR_DATA*; hay que pasar un puntero real.
+    let result = null;
+    let used = null;
+    if (useEnrollXFirst) {
+      used = "FTREnrollX";
+      result = callEnrollX();
+    } else {
+      used = "FTREnroll";
+      result = callEnroll();
+    }
+
+    // Fallback automático: si FTREnroll devuelve 201 y existe FTREnrollX, probar EnrollX.
+    if (
+      used === "FTREnroll" &&
+      result === 201 &&
+      cached.FTREnrollX &&
+      String(process.env.FTR_ENROLL_NO_X_FALLBACK || "").trim() !== "1"
+    ) {
+      try {
+        const resultX = callEnrollX();
+        if (debug) {
+          console.log(
+            `[DEBUG] FTREnroll -> 201; fallback a FTREnrollX result=${resultX}`,
+          );
+        }
+        used = "FTREnrollX";
+        result = resultX;
+      } catch (e) {
+        if (debug) {
+          console.log(
+            `[DEBUG] fallback FTREnrollX lanzó error: ${e?.message || String(e)}`,
+          );
+        }
+      }
+    }
     lastResult = result;
     lastDwSize = out.dwSize;
 
     if (debug) {
       console.log(
-        `[DEBUG] FTREnroll(${label}) attempt=${attemptNo} purpose=${purposeValue} result=${result} dwSize=${out.dwSize}`,
+        `[DEBUG] ${used}(${label}) attempt=${attemptNo} purpose=${purposeValue} result=${result} dwSize=${out.dwSize}`,
       );
     }
 

@@ -172,7 +172,10 @@ function listExports(buf) {
   allFuncRvas.sort((a, b) => a - b);
   const uniqueFuncRvas = [];
   for (const rva of allFuncRvas) {
-    if (uniqueFuncRvas.length === 0 || uniqueFuncRvas[uniqueFuncRvas.length - 1] !== rva) {
+    if (
+      uniqueFuncRvas.length === 0 ||
+      uniqueFuncRvas[uniqueFuncRvas.length - 1] !== rva
+    ) {
       uniqueFuncRvas.push(rva);
     }
   }
@@ -270,7 +273,9 @@ const interesting = [
 ];
 
 const foundInteresting = res.exports
-  .filter((e) => interesting.some((k) => e.name.toLowerCase() === k.toLowerCase()))
+  .filter((e) =>
+    interesting.some((k) => e.name.toLowerCase() === k.toLowerCase()),
+  )
   .map((e) => ({
     name: e.name,
     stdcallArgBytes: e.stdcallArgBytes,
