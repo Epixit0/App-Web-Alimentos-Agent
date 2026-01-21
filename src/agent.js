@@ -475,7 +475,11 @@ async function capture(jobType) {
       }
 
       // Fallback opcional (solo para diagnóstico). No recomendado para producción.
-      if (String(process.env.FINGERPRINT_AGENT_ALLOW_FRAME_FALLBACK || "").trim() === "1") {
+      if (
+        String(
+          process.env.FINGERPRINT_AGENT_ALLOW_FRAME_FALLBACK || "",
+        ).trim() === "1"
+      ) {
         const frame = await scanner.captureFingerprint(5, 153600);
         if (!frame || frame.length === 0) {
           throw new Error("No se pudo capturar la huella");

@@ -170,6 +170,23 @@ function loadMatcher() {
       ]),
   );
 
+  // Algunos SDKs exportan también las funciones de escaneo dentro de FTRAPI.dll.
+  // Esto nos permite abrir un handle compatible con FTREnroll en caso de que el handle
+  // proveniente de ftrScanAPI.dll no sea aceptado por FTREnroll.
+  const scanOpen = resolveFunction(
+    lib,
+    "ftrScanOpenDevice",
+    ["ftrScanOpenDevice", "_ftrScanOpenDevice@0", "ftrScanOpenDevice@0"],
+    (loadedLib, name) => loadedLib.func("__stdcall", name, "void *", []),
+  );
+
+  const scanClose = resolveFunction(
+    lib,
+    "ftrScanCloseDevice",
+    ["ftrScanCloseDevice", "_ftrScanCloseDevice@4", "ftrScanCloseDevice@4"],
+    (loadedLib, name) => loadedLib.func("__stdcall", name, "void", ["void *"]),
+  );
+
   const enroll = resolveFunction(
     lib,
     "FTREnroll",
@@ -184,11 +201,7 @@ function loadMatcher() {
       "FTR_Enroll@12",
     ],
     (loadedLib, name) =>
-      loadedLib.func("__stdcall", name, "int", [
-        "void *",
-        "int",
-        "FTR_DATA *",
-      ]),
+      loadedLib.func("__stdcall", name, "int", ["void *", "int", "FTR_DATA *"]),
   );
 
   return {
@@ -198,10 +211,14 @@ function loadMatcher() {
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
     FTREnroll: enroll?.fn || null,
+    ftrScanOpenDevice: scanOpen?.fn || null,
+    ftrScanCloseDevice: scanClose?.fn || null,
     names: {
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
       FTREnroll: enroll?.name || null,
+      ftrScanOpenDevice: scanOpen?.name || null,
+      ftrScanCloseDevice: scanClose?.name || null,
     },
     loadError: null,
     triedPaths,
@@ -254,8 +271,7 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
 
   const PURPOSE_ENROLL = 3;
   const PURPOSE_VERIFY = 1;
-  const purposeValue =
-    purpose === "verify" ? PURPOSE_VERIFY : PURPOSE_ENROLL;
+  const purposeValue = purpose === "verify" ? PURPOSE_VERIFY : PURPOSE_ENROLL;
 
   // Tamaño típico de template: 3-6KB. Permitimos override por env si tu SDK usa más.
   const bufSizeRaw = Number(process.env.FTR_TEMPLATE_BUFFER_SIZE || 6144);
@@ -268,20 +284,51 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
       ? Math.min(maxAttemptsRaw, 10)
       : 3;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  const debug = String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+  async function attemptEnroll(handle, attemptNo, label) {
     const outBuffer = Buffer.alloc(templateBufferSize);
     const out = { dwSize: templateBufferSize, pData: outBuffer };
 
-    const result = cached.FTREnroll(
-      deviceHandle,
-      purposeValue,
-      koffi.as(out, "FTR_DATA *"),
-    );
+    const result = cached.FTREnroll(handle, purposeValue, out);
+
+    if (debug) {
+      console.log(
+        `[DEBUG] FTREnroll(${label}) attempt=${attemptNo} result=${result} dwSize=${out.dwSize}`,
+      );
+    }
 
     if (result === 0 && out.dwSize > 0 && out.dwSize <= templateBufferSize) {
       const tpl = outBuffer.slice(0, out.dwSize);
       const hasData = tpl.some((b) => b !== 0);
       if (hasData) return tpl;
+    }
+    return null;
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // 1) Intento con el handle entregado por el scanner actual
+    if (deviceHandle) {
+      const tpl = await attemptEnroll(deviceHandle, attempt, "scanner-handle");
+      if (tpl) return tpl;
+    }
+
+    // 2) Si falla, reintenta abriendo el device desde este mismo DLL (FTRAPI.dll)
+    if (cached.ftrScanOpenDevice && cached.ftrScanCloseDevice) {
+      let tmpHandle = null;
+      try {
+        tmpHandle = cached.ftrScanOpenDevice();
+        if (tmpHandle) {
+          const tpl2 = await attemptEnroll(tmpHandle, attempt, "ftrapi-scan-handle");
+          if (tpl2) return tpl2;
+        }
+      } finally {
+        try {
+          if (tmpHandle) cached.ftrScanCloseDevice(tmpHandle);
+        } catch {
+          // ignore
+        }
+      }
     }
 
     // Pequeña espera para reintentar si el usuario aún está colocando el dedo.
