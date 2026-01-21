@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 /*
   Dump simple de exports PE (Windows DLL/EXE) sin dumpbin.
+  Además intenta inferir bytes de argumentos stdcall buscando "ret N" (C2 imm16).
+
   Uso:
     node scripts/dump-exports.js "C:\\ruta\\FTRAPI.dll"
+
+  Full:
+    set DUMP_EXPORTS_FULL=1
 */
 
 import fs from "fs";
@@ -38,26 +43,23 @@ function rvaToFileOffset(buf, peOffset, rva) {
   const sectionTable = peOffset + 24 + sizeOfOptionalHeader;
   for (let i = 0; i < numberOfSections; i += 1) {
     const secOff = sectionTable + i * 40;
+    const virtualSize = readU32(buf, secOff + 8);
     const virtualAddress = readU32(buf, secOff + 12);
     const sizeOfRawData = readU32(buf, secOff + 16);
     const pointerToRawData = readU32(buf, secOff + 20);
-    const virtualSize = readU32(buf, secOff + 8);
-
     if (
       virtualAddress == null ||
+      virtualSize == null ||
       sizeOfRawData == null ||
-      pointerToRawData == null ||
-      virtualSize == null
+      pointerToRawData == null
     ) {
       return null;
     }
-
     const maxSize = Math.max(virtualSize, sizeOfRawData);
     if (rva >= virtualAddress && rva < virtualAddress + maxSize) {
       return pointerToRawData + (rva - virtualAddress);
     }
   }
-
   return null;
 }
 
@@ -68,7 +70,6 @@ function getPeInfo(buf) {
 
   const e_lfanew = readU32(buf, 0x3c);
   if (e_lfanew == null) return { ok: false, error: "No e_lfanew" };
-
   if (e_lfanew + 4 > buf.length)
     return { ok: false, error: "PE offset fuera de rango" };
 
@@ -81,58 +82,67 @@ function getPeInfo(buf) {
     return { ok: false, error: "No es PE (sin firma PE\\0\\0)" };
   }
 
-  const machine = readU16(buf, e_lfanew + 4);
   const sizeOfOptionalHeader = readU16(buf, e_lfanew + 20);
-  if (machine == null || sizeOfOptionalHeader == null)
+  if (sizeOfOptionalHeader == null)
     return { ok: false, error: "Header PE incompleto" };
 
   const optOff = e_lfanew + 24;
   const magic = readU16(buf, optOff);
   if (magic == null) return { ok: false, error: "Optional header incompleto" };
 
-  // 0x10b = PE32, 0x20b = PE32+
   const arch = magic === 0x10b ? "x86" : magic === 0x20b ? "x64" : "unknown";
-
-  // DataDirectory[0] = Export Table. Offset depende del tipo.
-  // Para PE32, DataDirectory inicia en optOff+96
-  // Para PE32+, inicia en optOff+112
   const dataDirBase = magic === 0x10b ? optOff + 96 : optOff + 112;
-  const exportRva = readU32(buf, dataDirBase + 0);
-  const exportSize = readU32(buf, dataDirBase + 4);
+  const exportRva = readU32(buf, dataDirBase + 0) || 0;
+  const exportSize = readU32(buf, dataDirBase + 4) || 0;
 
-  return {
-    ok: true,
-    peOffset: e_lfanew,
-    arch,
-    machine,
-    exportRva: exportRva || 0,
-    exportSize: exportSize || 0,
-  };
+  return { ok: true, peOffset: e_lfanew, arch, exportRva, exportSize };
+}
+
+function guessStdcallArgBytesAt(buf, fileOffset, maxScan = 2048) {
+  if (fileOffset == null) return null;
+  if (fileOffset < 0 || fileOffset >= buf.length) return null;
+  const end = Math.min(buf.length, fileOffset + maxScan);
+  let last = null;
+  for (let i = fileOffset; i + 2 < end; i += 1) {
+    if (buf[i] === 0xc2) {
+      last = buf.readUInt16LE(i + 1);
+    }
+  }
+  return last;
 }
 
 function listExports(buf) {
   const info = getPeInfo(buf);
   if (!info.ok) return { ok: false, error: info.error };
-  if (!info.exportRva) {
-    return { ok: true, arch: info.arch, exports: [] };
-  }
+  if (!info.exportRva) return { ok: true, arch: info.arch, exports: [] };
 
   const exportDirOff = rvaToFileOffset(buf, info.peOffset, info.exportRva);
-  if (exportDirOff == null) {
+  if (exportDirOff == null)
     return { ok: false, error: "No se pudo mapear export directory RVA" };
-  }
 
-  // IMAGE_EXPORT_DIRECTORY
+  const numberOfFunctions = readU32(buf, exportDirOff + 20);
   const numberOfNames = readU32(buf, exportDirOff + 24);
+  const addressOfFunctionsRva = readU32(buf, exportDirOff + 28);
   const addressOfNamesRva = readU32(buf, exportDirOff + 32);
-  if (numberOfNames == null || addressOfNamesRva == null) {
-    return { ok: false, error: "Export directory corrupto" };
+  const addressOfNameOrdinalsRva = readU32(buf, exportDirOff + 36);
+
+  if (
+    numberOfFunctions == null ||
+    numberOfNames == null ||
+    addressOfFunctionsRva == null ||
+    addressOfNamesRva == null ||
+    addressOfNameOrdinalsRva == null
+  ) {
+    return { ok: false, error: "Export directory incompleto" };
   }
 
   const namesOff = rvaToFileOffset(buf, info.peOffset, addressOfNamesRva);
-  if (namesOff == null) {
-    return { ok: false, error: "No se pudo mapear AddressOfNames" };
-  }
+  const ordOff = rvaToFileOffset(buf, info.peOffset, addressOfNameOrdinalsRva);
+  const funcsOff = rvaToFileOffset(buf, info.peOffset, addressOfFunctionsRva);
+
+  if (namesOff == null) return { ok: false, error: "No AddressOfNames" };
+  if (ordOff == null) return { ok: false, error: "No AddressOfNameOrdinals" };
+  if (funcsOff == null) return { ok: false, error: "No AddressOfFunctions" };
 
   const exports = [];
   for (let i = 0; i < numberOfNames; i += 1) {
@@ -141,10 +151,26 @@ function listExports(buf) {
     const nameOff = rvaToFileOffset(buf, info.peOffset, nameRva);
     if (nameOff == null) continue;
     const name = readCString(buf, nameOff);
-    if (name) exports.push(name);
+    if (!name) continue;
+
+    const ordinalIndex = readU16(buf, ordOff + i * 2);
+    const funcRva =
+      ordinalIndex != null && ordinalIndex < numberOfFunctions
+        ? readU32(buf, funcsOff + ordinalIndex * 4)
+        : null;
+    const funcOff =
+      funcRva != null ? rvaToFileOffset(buf, info.peOffset, funcRva) : null;
+
+    exports.push({
+      name,
+      ordinalIndex: ordinalIndex ?? null,
+      rva: funcRva ?? null,
+      fileOffset: funcOff ?? null,
+      stdcallArgBytes: guessStdcallArgBytesAt(buf, funcOff, 2048),
+    });
   }
 
-  exports.sort((a, b) => a.localeCompare(b));
+  exports.sort((a, b) => a.name.localeCompare(b.name));
   return { ok: true, arch: info.arch, exports };
 }
 
@@ -175,15 +201,24 @@ const interesting = [
   "FTRIdentifyN",
   "FTRVerify",
   "FTRVerifyN",
-  "ftrScanOpenDevice",
-  "FTRScanOpenDevice",
-  "ftrScanCloseDevice",
-  "FTRScanCloseDevice",
+  "FTRInitialize",
+  "FTRTerminate",
+  "FTRSetParam",
+  "FTRGetParam",
+  "FTRGetOptConvParam",
+  "MTInitialize",
+  "MTTerminate",
+  "MTEnrollX",
+  "MTCaptureFrame",
 ];
 
-const foundInteresting = res.exports.filter((n) =>
-  interesting.some((k) => n.toLowerCase() === k.toLowerCase()),
-);
+const foundInteresting = res.exports
+  .filter((e) => interesting.some((k) => e.name.toLowerCase() === k.toLowerCase()))
+  .map((e) => ({
+    name: e.name,
+    stdcallArgBytes: e.stdcallArgBytes,
+    rva: e.rva,
+  }));
 
 console.log(
   JSON.stringify(
@@ -198,7 +233,9 @@ console.log(
   ),
 );
 
-// Imprime lista completa si se pide
 if (String(process.env.DUMP_EXPORTS_FULL || "").trim() === "1") {
-  for (const name of res.exports) console.log(name);
+  for (const e of res.exports) {
+    const bytes = e.stdcallArgBytes == null ? "?" : String(e.stdcallArgBytes);
+    console.log(`${e.name}\tstdcallArgBytes=${bytes}`);
+  }
 }
