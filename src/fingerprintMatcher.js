@@ -20,6 +20,8 @@ const __dirname = path.dirname(__filename);
 
 const defaultDllPath = path.join(__dirname, "../lib/FTRAPI.dll");
 
+const fallbackScanDllPath = path.join(__dirname, "../lib/ftrScanAPI.dll");
+
 function resolveDllPath() {
   const fromEnv =
     typeof process.env.FTRAPI_DLL_PATH === "string" &&
@@ -27,6 +29,18 @@ function resolveDllPath() {
       ? process.env.FTRAPI_DLL_PATH.trim()
       : null;
   return fromEnv || defaultDllPath;
+}
+
+function getCandidateDllPaths() {
+  const primary = resolveDllPath();
+  const candidates = [primary];
+  // Si el usuario no overrideó y el FTRAPI.dll no está, intenta con la DLL de escaneo
+  // (algunos SDKs/instalaciones agrupan exports en un solo binario).
+  if (primary === defaultDllPath) {
+    candidates.push(fallbackScanDllPath);
+  }
+  // De-dup
+  return Array.from(new Set(candidates.filter(Boolean)));
 }
 
 function safeJsonParse(raw) {
@@ -78,17 +92,36 @@ function fileExists(p) {
 
 function loadMatcher() {
   if (!nativeAvailable || !koffi) return null;
-  const dllPath = resolveDllPath();
-  if (!fileExists(dllPath)) {
-    return { dllPath, available: false, names: null, loadError: "dll_not_found" };
+  const triedPaths = getCandidateDllPaths();
+
+  let dllPath = triedPaths[0] || defaultDllPath;
+  let lib = null;
+  let lastLoadError = null;
+
+  for (const candidate of triedPaths) {
+    dllPath = candidate;
+    if (!fileExists(candidate)) {
+      lastLoadError = "dll_not_found";
+      continue;
+    }
+    try {
+      lib = koffi.load(candidate);
+      lastLoadError = null;
+      break;
+    } catch (e) {
+      lastLoadError = e?.message || String(e);
+      lib = null;
+    }
   }
 
-  let lib;
-  try {
-    lib = koffi.load(dllPath);
-  } catch (e) {
-    const msg = e?.message || String(e);
-    return { dllPath, available: false, names: null, loadError: msg };
+  if (!lib) {
+    return {
+      dllPath,
+      available: false,
+      names: null,
+      loadError: lastLoadError || "dll_load_failed",
+      triedPaths,
+    };
   }
 
   const FTR_DATA = koffi.struct("FTR_DATA", {
@@ -148,6 +181,7 @@ function loadMatcher() {
       FTRIdentify: identify?.name || null,
     },
     loadError: null,
+    triedPaths,
   };
 }
 
@@ -166,12 +200,14 @@ export function getMatcherInfo() {
         dllPath: cached.dllPath,
         names: cached.names,
         loadError: cached.loadError || null,
+        triedPaths: Array.isArray(cached.triedPaths) ? cached.triedPaths : null,
       }
     : {
         available: false,
         dllPath: defaultDllPath,
         names: null,
         loadError: nativeAvailable ? "unknown" : "koffi_not_available",
+        triedPaths: null,
       };
 }
 
