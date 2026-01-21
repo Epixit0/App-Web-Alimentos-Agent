@@ -97,7 +97,8 @@ function ensureWindowsDllDirInPath(dllPath) {
   const dir = path.dirname(dllPath);
   if (!dir) return;
 
-  const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+  const key =
+    Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
   const current = String(process.env[key] || "");
   const parts = current.split(";").filter(Boolean);
 
@@ -197,14 +198,46 @@ function loadMatcher() {
   const scanOpen = resolveFunction(
     lib,
     "ftrScanOpenDevice",
-    ["ftrScanOpenDevice", "_ftrScanOpenDevice@0", "ftrScanOpenDevice@0"],
+    [
+      // nombres comunes (SDK scan)
+      "ftrScanOpenDevice",
+      "_ftrScanOpenDevice@0",
+      "ftrScanOpenDevice@0",
+
+      // variantes vistas en algunos paquetes/SDKs
+      "FTRScanOpenDevice",
+      "FTRScanOpenDeviceA",
+      "FTRScanOpenDeviceW",
+      "_FTRScanOpenDevice@0",
+      "FTRScanOpenDevice@0",
+      "_FTRScanOpenDeviceA@0",
+      "FTRScanOpenDeviceA@0",
+      "_FTRScanOpenDeviceW@0",
+      "FTRScanOpenDeviceW@0",
+    ],
     (loadedLib, name) => loadedLib.func("__stdcall", name, "void *", []),
   );
 
   const scanClose = resolveFunction(
     lib,
     "ftrScanCloseDevice",
-    ["ftrScanCloseDevice", "_ftrScanCloseDevice@4", "ftrScanCloseDevice@4"],
+    [
+      // nombres comunes (SDK scan)
+      "ftrScanCloseDevice",
+      "_ftrScanCloseDevice@4",
+      "ftrScanCloseDevice@4",
+
+      // variantes vistas en algunos paquetes/SDKs
+      "FTRScanCloseDevice",
+      "FTRScanCloseDeviceA",
+      "FTRScanCloseDeviceW",
+      "_FTRScanCloseDevice@4",
+      "FTRScanCloseDevice@4",
+      "_FTRScanCloseDeviceA@4",
+      "FTRScanCloseDeviceA@4",
+      "_FTRScanCloseDeviceW@4",
+      "FTRScanCloseDeviceW@4",
+    ],
     (loadedLib, name) => loadedLib.func("__stdcall", name, "void", ["void *"]),
   );
 

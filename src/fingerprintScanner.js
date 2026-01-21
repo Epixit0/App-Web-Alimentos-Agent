@@ -137,7 +137,8 @@ function ensureWindowsDllDirInPath(dllPath) {
   const dir = path.dirname(dllPath);
   if (!dir) return;
 
-  const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+  const key =
+    Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
   const current = String(process.env[key] || "");
   const parts = current.split(";").filter(Boolean);
 
