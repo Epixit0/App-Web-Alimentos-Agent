@@ -244,7 +244,9 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   }
 
   const probe = { dwSize: probeTemplate.length, pData: probeTemplate };
-  const matchedIndex = [0];
+  // Importante: inicializar en -1 para evitar que 0 (match) sea el valor por defecto
+  // si la DLL no llega a escribir el resultado por algún motivo.
+  const matchedIndex = [-1];
   const score = [0];
 
   const identifyResult = cached.FTRIdentify(
@@ -265,5 +267,9 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   const idx = matchedIndex[0];
   const sc = score[0];
 
-  return { matched: idx === 0, score: sc, index: idx };
+  // Semántica esperada (según implementación previa): index 0 => coincide con base.
+  // Algunas builds podrían usar índice 1-based cuando solo hay un template.
+  const matched = idx === 0 || idx === 1;
+
+  return { matched, score: sc, index: idx };
 }

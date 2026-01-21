@@ -354,6 +354,12 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
     };
   }
 
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  let checked = 0;
+  let bestScore = -Infinity;
+  let bestIndex = null;
+
   let cursor = null;
   for (;;) {
     const { items, nextCursor } = await listTemplates(runtime, {
@@ -367,6 +373,22 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
       if (!base) continue;
 
       const result = await verifyTemplate(base, capturedTemplate);
+      checked += 1;
+
+      if (
+        result?.score != null &&
+        Number.isFinite(Number(result.score)) &&
+        Number(result.score) > bestScore
+      ) {
+        bestScore = Number(result.score);
+        bestIndex = result?.index;
+      }
+
+      if (debug && checked <= 5) {
+        console.log(
+          `[DEBUG] match check #${checked} worker=${item?.workerId} idx=${result?.index} score=${result?.score} matched=${result?.matched}`,
+        );
+      }
       if (result?.matched) {
         const workerName = item?.workerName || item?.workerId || "desconocido";
         return {
@@ -379,6 +401,13 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
 
     if (!nextCursor) break;
     cursor = nextCursor;
+  }
+
+  if (debug) {
+    const bestScoreText = bestScore === -Infinity ? "n/a" : String(bestScore);
+    console.log(
+      `[DEBUG] duplicate-check complete: checked=${checked} bestScore=${bestScoreText} bestIndex=${bestIndex}`,
+    );
   }
 
   return { duplicate: false };
