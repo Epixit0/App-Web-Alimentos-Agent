@@ -170,15 +170,38 @@ function loadMatcher() {
       ]),
   );
 
+  const enroll = resolveFunction(
+    lib,
+    "FTREnroll",
+    [
+      "FTREnroll",
+      "FTR_Enroll",
+      "FTREnrollA",
+      "FTR_EnrollA",
+      "_FTREnroll@12",
+      "FTREnroll@12",
+      "_FTR_Enroll@12",
+      "FTR_Enroll@12",
+    ],
+    (loadedLib, name) =>
+      loadedLib.func("__stdcall", name, "int", [
+        "void *",
+        "int",
+        "FTR_DATA *",
+      ]),
+  );
+
   return {
     dllPath,
     available: Boolean(setBase && identify),
     FTR_DATA,
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
+    FTREnroll: enroll?.fn || null,
     names: {
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
+      FTREnroll: enroll?.name || null,
     },
     loadError: null,
     triedPaths,
@@ -190,6 +213,11 @@ let cached = null;
 export function isMatcherAvailable() {
   if (!cached) cached = loadMatcher();
   return Boolean(cached && cached.available);
+}
+
+export function isEnrollAvailable() {
+  if (!cached) cached = loadMatcher();
+  return Boolean(cached && cached.FTREnroll);
 }
 
 export function getMatcherInfo() {
@@ -209,6 +237,60 @@ export function getMatcherInfo() {
         loadError: nativeAvailable ? "unknown" : "koffi_not_available",
         triedPaths: null,
       };
+}
+
+export async function createTemplateFromDevice(deviceHandle, purpose) {
+  if (!cached) cached = loadMatcher();
+
+  if (!cached || !cached.FTREnroll) {
+    const info = getMatcherInfo();
+    const err = new Error(
+      "No está disponible FTREnroll en la DLL (no se puede generar template).",
+    );
+    err.code = "AGENT_ENROLL_UNAVAILABLE";
+    err.details = info;
+    throw err;
+  }
+
+  const PURPOSE_ENROLL = 3;
+  const PURPOSE_VERIFY = 1;
+  const purposeValue =
+    purpose === "verify" ? PURPOSE_VERIFY : PURPOSE_ENROLL;
+
+  // Tamaño típico de template: 3-6KB. Permitimos override por env si tu SDK usa más.
+  const bufSizeRaw = Number(process.env.FTR_TEMPLATE_BUFFER_SIZE || 6144);
+  const templateBufferSize =
+    Number.isFinite(bufSizeRaw) && bufSizeRaw > 512 ? bufSizeRaw : 6144;
+
+  const maxAttemptsRaw = Number(process.env.FTR_ENROLL_ATTEMPTS || 3);
+  const maxAttempts =
+    Number.isFinite(maxAttemptsRaw) && maxAttemptsRaw > 0
+      ? Math.min(maxAttemptsRaw, 10)
+      : 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const outBuffer = Buffer.alloc(templateBufferSize);
+    const out = { dwSize: templateBufferSize, pData: outBuffer };
+
+    const result = cached.FTREnroll(
+      deviceHandle,
+      purposeValue,
+      koffi.as(out, "FTR_DATA *"),
+    );
+
+    if (result === 0 && out.dwSize > 0 && out.dwSize <= templateBufferSize) {
+      const tpl = outBuffer.slice(0, out.dwSize);
+      const hasData = tpl.some((b) => b !== 0);
+      if (hasData) return tpl;
+    }
+
+    // Pequeña espera para reintentar si el usuario aún está colocando el dedo.
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  return null;
 }
 
 export async function verifyTemplate(baseTemplate, probeTemplate) {

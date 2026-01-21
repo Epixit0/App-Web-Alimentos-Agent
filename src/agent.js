@@ -7,6 +7,7 @@ import { execFileSync } from "child_process";
 import zlib from "zlib";
 import { getScanner } from "./fingerprintScanner.js";
 import {
+  createTemplateFromDevice,
   getMatcherInfo,
   isMatcherAvailable,
   verifyTemplate,
@@ -455,7 +456,7 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
   return { matched: false };
 }
 
-async function capture() {
+async function capture(jobType) {
   const scanner = getScanner();
 
   if (!scanner.openDevice()) {
@@ -463,6 +464,34 @@ async function capture() {
   }
 
   try {
+    // IMPORTANTE: para que FTRSetBaseTemplate/FTRIdentify funcionen, debemos guardar/usar
+    // templates reales del SDK (no el frame crudo). Los frames crudos suelen causar
+    // errores en el matcher y nunca detectan duplicados.
+
+    if (jobType === "enroll" || jobType === "verify") {
+      const tpl = await createTemplateFromDevice(scanner.handle, jobType);
+      if (tpl && tpl.length > 0) {
+        return tpl;
+      }
+
+      // Fallback opcional (solo para diagnóstico). No recomendado para producción.
+      if (String(process.env.FINGERPRINT_AGENT_ALLOW_FRAME_FALLBACK || "").trim() === "1") {
+        const frame = await scanner.captureFingerprint(5, 153600);
+        if (!frame || frame.length === 0) {
+          throw new Error("No se pudo capturar la huella");
+        }
+        const hasData = frame.some((b) => b !== 0);
+        if (!hasData) {
+          throw new Error("La huella capturada no contiene datos válidos");
+        }
+        return frame;
+      }
+
+      throw new Error(
+        "No se pudo generar template con FTREnroll. Verifica que el SDK soporte FTREnroll y que el dedo esté colocado correctamente.",
+      );
+    }
+
     const frame = await scanner.captureFingerprint(5, 153600);
     if (!frame || frame.length === 0) {
       throw new Error("No se pudo capturar la huella");
@@ -580,7 +609,7 @@ while (true) {
   console.log(`Job recibido: ${job._id} tipo=${job.type}`);
 
   try {
-    const template = await capture();
+    const template = await capture(job.type);
 
     if (job.type === "enroll") {
       const dupe = await findDuplicateForEnroll(
