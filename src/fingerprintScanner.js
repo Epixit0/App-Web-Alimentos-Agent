@@ -16,7 +16,7 @@ try {
   const message = error?.message || String(error);
   console.error(
     "Dependencias nativas del lector (koffi) no disponibles en el agente.",
-    message
+    message,
   );
 }
 
@@ -107,8 +107,20 @@ const FTRSCAN_FRAME_PARAMETERS = nativeDepsAvailable
 let ftrScanAPI = null;
 
 // En el agente, las DLL deben estar en App-Web-Alimentos-Agent/lib
-const ftrAPIPath = path.join(__dirname, "../lib/FTRAPI.dll");
-const ftrScanAPIPath = path.join(__dirname, "../lib/ftrScanAPI.dll");
+const ftrAPIPathDefault = path.join(__dirname, "../lib/FTRAPI.dll");
+const ftrScanAPIPathDefault = path.join(__dirname, "../lib/ftrScanAPI.dll");
+
+const ftrAPIPath =
+  typeof process.env.FTRSCAN_FALLBACK_DLL_PATH === "string" &&
+  process.env.FTRSCAN_FALLBACK_DLL_PATH.trim()
+    ? process.env.FTRSCAN_FALLBACK_DLL_PATH.trim()
+    : ftrAPIPathDefault;
+
+const ftrScanAPIPath =
+  typeof process.env.FTRSCAN_DLL_PATH === "string" &&
+  process.env.FTRSCAN_DLL_PATH.trim()
+    ? process.env.FTRSCAN_DLL_PATH.trim()
+    : ftrScanAPIPathDefault;
 
 function fileExists(filePath) {
   try {
@@ -144,7 +156,7 @@ function loadScanDLL(dllPath, dllName) {
           `  Esto causa el error Win32 193 (Bad EXE format).\n` +
           `  Soluciones posibles:\n` +
           `  - Usar DLLs ${expected} (por ejemplo, carpeta ${expected} del SDK/driver de Futronic).\n` +
-          `  - O correr el agente con Node ${suggestedNodeArch} para que coincida con tus DLLs.`
+          `  - O correr el agente con Node ${suggestedNodeArch} para que coincida con tus DLLs.`,
       );
       return null;
     }
@@ -158,7 +170,7 @@ function loadScanDLL(dllPath, dllName) {
         "__stdcall",
         "ftrScanOpenDevice",
         "void *",
-        []
+        [],
       ),
       ftrScanGetFrame: lib.func("__stdcall", "ftrScanGetFrame", "int", [
         "void *",
@@ -181,13 +193,13 @@ function loadScanDLL(dllPath, dllName) {
     if (/Win32 error 193/i.test(msg) || /error 193/i.test(msg)) {
       console.warn(
         `  Suele significar DLL de 32 bits en Node 64 bits (o viceversa).\n` +
-          `  Tu Node: ${getExpectedWindowsDllArch()}`
+          `  Tu Node: ${getExpectedWindowsDllArch()}`,
       );
     }
 
     if (error.stack) {
       console.warn(
-        `  Stack: ${error.stack.split("\n").slice(0, 3).join("\n")}`
+        `  Stack: ${error.stack.split("\n").slice(0, 3).join("\n")}`,
       );
     }
     return null;
@@ -210,7 +222,7 @@ if (!ftrScanAPI) {
     console.warn(
       `[WARN] FTRAPI.dll parece ser ${detected.arch} pero tu Node es ${expected}. ` +
         `Si ftrScanAPI.dll ya cargó, la captura puede funcionar igual. ` +
-        `Evita mezclar DLLs x86/x64 y usa el mismo paquete (x86 o x64) para ambas.`
+        `Evita mezclar DLLs x86/x64 y usa el mismo paquete (x86 o x64) para ambas.`,
     );
   }
 }
@@ -218,7 +230,7 @@ if (!ftrScanAPI) {
 if (!ftrScanAPI) {
   console.error("[ERROR] No se pudo cargar ninguna DLL de escaneo");
   console.error(
-    "[WARN] El lector de huellas no estará disponible en el agente"
+    "[WARN] El lector de huellas no estará disponible en el agente",
   );
 }
 
@@ -333,12 +345,12 @@ class FingerprintScanner {
       const result = ftrScanAPI.ftrScanGetFrame(
         this.handle,
         imageBuffer,
-        frameParams
+        frameParams,
       );
 
       if (process.env.DEBUG_FINGERPRINT === "1") {
         console.log(
-          `[DEBUG_FINGERPRINT] ftrScanGetFrame result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`
+          `[DEBUG_FINGERPRINT] ftrScanGetFrame result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`,
         );
       }
 
@@ -386,7 +398,7 @@ class FingerprintScanner {
 
       if (process.env.DEBUG_FINGERPRINT === "1") {
         console.log(
-          `[DEBUG_FINGERPRINT] ftrScanGetFrame.async result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`
+          `[DEBUG_FINGERPRINT] ftrScanGetFrame.async result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`,
         );
       }
 
