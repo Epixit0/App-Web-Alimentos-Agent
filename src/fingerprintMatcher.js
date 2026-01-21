@@ -256,7 +256,11 @@ export function getMatcherInfo() {
       };
 }
 
-export async function createTemplateFromDevice(deviceHandle, purpose) {
+export async function createTemplateFromDevice(
+  deviceHandle,
+  purpose,
+  options = {},
+) {
   if (!cached) cached = loadMatcher();
 
   if (!cached || !cached.FTREnroll) {
@@ -309,6 +313,14 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
   let lastDwSize = null;
 
   async function attemptEnroll(handle, attemptNo, label, purposeValue) {
+    if (typeof options?.preCapture === "function") {
+      try {
+        await options.preCapture();
+      } catch {
+        // ignore
+      }
+    }
+
     const outBuffer = Buffer.alloc(templateBufferSize);
     const out = { dwSize: templateBufferSize, pData: outBuffer };
 

@@ -469,17 +469,64 @@ async function capture(jobType) {
     // errores en el matcher y nunca detectan duplicados.
 
     if (jobType === "enroll" || jobType === "verify") {
-      // Warm-up: capturar 1 frame antes de FTREnroll. En algunos SDKs esto ayuda a que
-      // el lector quede en estado "listo" y evita códigos de error como 201.
-      const warm = await scanner.captureFingerprint(1, 153600);
+      const debug =
+        String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+      // Warm-up: mantener el lector activo y asegurar que el frame tenga datos.
+      // Con 1 solo intento a veces devuelve un frame vacío (todo ceros) sin que el
+      // usuario perciba que el lector se encendió.
+      const warmupAttemptsRaw = Number(process.env.FTR_WARMUP_ATTEMPTS || 8);
+      const warmupAttempts =
+        Number.isFinite(warmupAttemptsRaw) && warmupAttemptsRaw > 0
+          ? Math.min(warmupAttemptsRaw, 20)
+          : 8;
+
+      let warm = null;
+      for (let i = 0; i < warmupAttempts; i += 1) {
+        warm = await scanner.captureFingerprint(1, 153600);
+        if (warm && warm.length > 0 && warm.some((b) => b !== 0)) break;
+        // pequeña pausa para que el usuario pueda colocar el dedo
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
       if (!warm || warm.length === 0) {
         throw new Error(
-          "No se pudo capturar un frame inicial (warm-up) antes de generar template. Verifica que el dedo esté colocado y el lector responda.",
+          "No se pudo capturar un frame inicial (warm-up) antes de generar template. Verifica que el lector responda.",
         );
       }
 
+      if (!warm.some((b) => b !== 0)) {
+        throw new Error(
+          "El lector devolvió frames vacíos (todo ceros). Asegúrate de poner el dedo y que el lector se encienda.",
+        );
+      }
+
+      if (debug) {
+        console.log(`[DEBUG] warm-up ok: bytes=${warm.length} nonZero=true`);
+      }
+
       try {
-        const tpl = await createTemplateFromDevice(scanner.handle, jobType);
+        const tpl = await createTemplateFromDevice(scanner.handle, jobType, {
+          // Mantener el lector activo entre reintentos de FTREnroll.
+          // Esto ayuda a que el usuario vea el LED y a “despertar” el driver.
+          preCapture: async () => {
+            try {
+              const frame = await scanner.captureFingerprint(1, 153600);
+              if (debug) {
+                const hasData = !!(
+                  frame &&
+                  frame.length &&
+                  frame.some((b) => b !== 0)
+                );
+                console.log(
+                  `[DEBUG] preCapture frame: ok=${!!frame} bytes=${frame?.length || 0} hasData=${hasData}`,
+                );
+              }
+            } catch {
+              // ignore
+            }
+          },
+        });
         if (tpl && tpl.length > 0) {
           return tpl;
         }
