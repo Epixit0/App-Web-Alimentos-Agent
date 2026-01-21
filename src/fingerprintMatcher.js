@@ -296,7 +296,7 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
   const templateBufferSize =
     Number.isFinite(bufSizeRaw) && bufSizeRaw > 512 ? bufSizeRaw : 6144;
 
-  const maxAttemptsRaw = Number(process.env.FTR_ENROLL_ATTEMPTS || 3);
+  const maxAttemptsRaw = Number(process.env.FTR_ENROLL_ATTEMPTS || 8);
   const maxAttempts =
     Number.isFinite(maxAttemptsRaw) && maxAttemptsRaw > 0
       ? Math.min(maxAttemptsRaw, 10)

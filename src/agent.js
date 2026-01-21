@@ -469,6 +469,15 @@ async function capture(jobType) {
     // errores en el matcher y nunca detectan duplicados.
 
     if (jobType === "enroll" || jobType === "verify") {
+      // Warm-up: capturar 1 frame antes de FTREnroll. En algunos SDKs esto ayuda a que
+      // el lector quede en estado "listo" y evita códigos de error como 201.
+      const warm = await scanner.captureFingerprint(1, 153600);
+      if (!warm || warm.length === 0) {
+        throw new Error(
+          "No se pudo capturar un frame inicial (warm-up) antes de generar template. Verifica que el dedo esté colocado y el lector responda.",
+        );
+      }
+
       try {
         const tpl = await createTemplateFromDevice(scanner.handle, jobType);
         if (tpl && tpl.length > 0) {
