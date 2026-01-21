@@ -90,6 +90,24 @@ function fileExists(p) {
   }
 }
 
+function ensureWindowsDllDirInPath(dllPath) {
+  if (process.platform !== "win32") return;
+  if (typeof dllPath !== "string" || !dllPath.trim()) return;
+
+  const dir = path.dirname(dllPath);
+  if (!dir) return;
+
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+  const current = String(process.env[key] || "");
+  const parts = current.split(";").filter(Boolean);
+
+  const dirLower = dir.toLowerCase();
+  const has = parts.some((p) => String(p).toLowerCase() === dirLower);
+  if (!has) {
+    process.env[key] = [dir, current].filter(Boolean).join(";");
+  }
+}
+
 function loadMatcher() {
   if (!nativeAvailable || !koffi) return null;
   const triedPaths = getCandidateDllPaths();
@@ -105,6 +123,9 @@ function loadMatcher() {
       continue;
     }
     try {
+      // Algunas funciones (p.ej. FTREnroll) pueden cargar dependencias por delay-load.
+      // Meter la carpeta al PATH ayuda a que Windows resuelva ftrMathAPI/ftrWSQ/livefinger2.
+      ensureWindowsDllDirInPath(candidate);
       lib = koffi.load(candidate);
       lastLoadError = null;
       break;

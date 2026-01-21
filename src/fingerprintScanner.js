@@ -130,6 +130,25 @@ function fileExists(filePath) {
   }
 }
 
+function ensureWindowsDllDirInPath(dllPath) {
+  if (process.platform !== "win32") return;
+  if (typeof dllPath !== "string" || !dllPath.trim()) return;
+
+  const dir = path.dirname(dllPath);
+  if (!dir) return;
+
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+  const current = String(process.env[key] || "");
+  const parts = current.split(";").filter(Boolean);
+
+  // Comparación case-insensitive en Windows
+  const dirLower = dir.toLowerCase();
+  const has = parts.some((p) => String(p).toLowerCase() === dirLower);
+  if (!has) {
+    process.env[key] = [dir, current].filter(Boolean).join(";");
+  }
+}
+
 function loadScanDLL(dllPath, dllName) {
   try {
     if (!nativeDepsAvailable) {
@@ -160,6 +179,10 @@ function loadScanDLL(dllPath, dllName) {
       );
       return null;
     }
+
+    // Importante: algunas DLLs de Futronic cargan dependencias (ftrMathAPI, ftrWSQ,
+    // livefinger2) en tiempo de ejecución. Asegurar el PATH evita fallos misteriosos.
+    ensureWindowsDllDirInPath(dllPath);
 
     const lib = koffi.load(dllPath);
 
