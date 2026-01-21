@@ -269,9 +269,27 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
     throw err;
   }
 
-  const PURPOSE_ENROLL = 3;
-  const PURPOSE_VERIFY = 1;
-  const purposeValue = purpose === "verify" ? PURPOSE_VERIFY : PURPOSE_ENROLL;
+  // Algunos SDKs usan valores distintos; permite override.
+  const PURPOSE_ENROLL_DEFAULT = 3;
+  const PURPOSE_VERIFY_DEFAULT = 1;
+
+  const enrollPurposeOverrideRaw = Number(process.env.FTR_ENROLL_PURPOSE);
+  const verifyPurposeOverrideRaw = Number(process.env.FTR_VERIFY_PURPOSE);
+
+  const enrollPurpose =
+    Number.isFinite(enrollPurposeOverrideRaw) && enrollPurposeOverrideRaw >= 0
+      ? enrollPurposeOverrideRaw
+      : PURPOSE_ENROLL_DEFAULT;
+  const verifyPurpose =
+    Number.isFinite(verifyPurposeOverrideRaw) && verifyPurposeOverrideRaw >= 0
+      ? verifyPurposeOverrideRaw
+      : PURPOSE_VERIFY_DEFAULT;
+
+  // Orden de prueba: por defecto intentamos el esperado y luego el alternativo.
+  const purposeCandidates =
+    purpose === "verify"
+      ? Array.from(new Set([verifyPurpose, enrollPurpose]))
+      : Array.from(new Set([enrollPurpose, verifyPurpose]));
 
   // Tamaño típico de template: 3-6KB. Permitimos override por env si tu SDK usa más.
   const bufSizeRaw = Number(process.env.FTR_TEMPLATE_BUFFER_SIZE || 6144);
@@ -284,17 +302,28 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
       ? Math.min(maxAttemptsRaw, 10)
       : 3;
 
-  const debug = String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
 
-  async function attemptEnroll(handle, attemptNo, label) {
+  let lastResult = null;
+  let lastDwSize = null;
+
+  async function attemptEnroll(handle, attemptNo, label, purposeValue) {
     const outBuffer = Buffer.alloc(templateBufferSize);
     const out = { dwSize: templateBufferSize, pData: outBuffer };
 
-    const result = cached.FTREnroll(handle, purposeValue, out);
+    // IMPORTANT: FTREnroll recibe FTR_DATA*; hay que pasar un puntero real.
+    const result = cached.FTREnroll(
+      handle,
+      purposeValue,
+      koffi.as(out, "FTR_DATA *"),
+    );
+    lastResult = result;
+    lastDwSize = out.dwSize;
 
     if (debug) {
       console.log(
-        `[DEBUG] FTREnroll(${label}) attempt=${attemptNo} result=${result} dwSize=${out.dwSize}`,
+        `[DEBUG] FTREnroll(${label}) attempt=${attemptNo} purpose=${purposeValue} result=${result} dwSize=${out.dwSize}`,
       );
     }
 
@@ -307,26 +336,38 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
   }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    // 1) Intento con el handle entregado por el scanner actual
-    if (deviceHandle) {
-      const tpl = await attemptEnroll(deviceHandle, attempt, "scanner-handle");
-      if (tpl) return tpl;
-    }
+    for (const purposeValue of purposeCandidates) {
+      // 1) Intento con el handle entregado por el scanner actual
+      if (deviceHandle) {
+        const tpl = await attemptEnroll(
+          deviceHandle,
+          attempt,
+          "scanner-handle",
+          purposeValue,
+        );
+        if (tpl) return tpl;
+      }
 
-    // 2) Si falla, reintenta abriendo el device desde este mismo DLL (FTRAPI.dll)
-    if (cached.ftrScanOpenDevice && cached.ftrScanCloseDevice) {
-      let tmpHandle = null;
-      try {
-        tmpHandle = cached.ftrScanOpenDevice();
-        if (tmpHandle) {
-          const tpl2 = await attemptEnroll(tmpHandle, attempt, "ftrapi-scan-handle");
-          if (tpl2) return tpl2;
-        }
-      } finally {
+      // 2) Si falla, reintenta abriendo el device desde este mismo DLL (FTRAPI.dll)
+      if (cached.ftrScanOpenDevice && cached.ftrScanCloseDevice) {
+        let tmpHandle = null;
         try {
-          if (tmpHandle) cached.ftrScanCloseDevice(tmpHandle);
-        } catch {
-          // ignore
+          tmpHandle = cached.ftrScanOpenDevice();
+          if (tmpHandle) {
+            const tpl2 = await attemptEnroll(
+              tmpHandle,
+              attempt,
+              "ftrapi-scan-handle",
+              purposeValue,
+            );
+            if (tpl2) return tpl2;
+          }
+        } finally {
+          try {
+            if (tmpHandle) cached.ftrScanCloseDevice(tmpHandle);
+          } catch {
+            // ignore
+          }
         }
       }
     }
@@ -337,7 +378,19 @@ export async function createTemplateFromDevice(deviceHandle, purpose) {
     }
   }
 
-  return null;
+  const err = new Error(
+    `No se pudo generar template con FTREnroll (último código=${lastResult}, dwSize=${lastDwSize}).`,
+  );
+  err.code = "AGENT_ENROLL_FAILED";
+  err.details = {
+    dllPath: cached.dllPath,
+    triedPaths: cached.triedPaths,
+    exports: cached.names,
+    lastResult,
+    lastDwSize,
+    purposeCandidates,
+  };
+  throw err;
 }
 
 export async function verifyTemplate(baseTemplate, probeTemplate) {

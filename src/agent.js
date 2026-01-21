@@ -469,9 +469,14 @@ async function capture(jobType) {
     // errores en el matcher y nunca detectan duplicados.
 
     if (jobType === "enroll" || jobType === "verify") {
-      const tpl = await createTemplateFromDevice(scanner.handle, jobType);
-      if (tpl && tpl.length > 0) {
-        return tpl;
+      try {
+        const tpl = await createTemplateFromDevice(scanner.handle, jobType);
+        if (tpl && tpl.length > 0) {
+          return tpl;
+        }
+      } catch (e) {
+        // Propaga un mensaje útil (incluye código de FTREnroll)
+        throw new Error(e?.message || String(e));
       }
 
       // Fallback opcional (solo para diagnóstico). No recomendado para producción.
@@ -492,7 +497,7 @@ async function capture(jobType) {
       }
 
       throw new Error(
-        "No se pudo generar template con FTREnroll. Verifica que el SDK soporte FTREnroll y que el dedo esté colocado correctamente.",
+        "No se pudo generar template con FTREnroll. Activa FINGERPRINT_AGENT_DEBUG_MATCH=1 para ver el código de error.",
       );
     }
 
