@@ -151,6 +151,38 @@ function loadMatcher() {
     pData: "void *",
   });
 
+  const initialize = resolveFunction(
+    lib,
+    "FTRInitialize",
+    [
+      "FTRInitialize",
+      "FTR_Initialize",
+      "FTRInitializeA",
+      "FTR_InitializeA",
+      "_FTRInitialize@0",
+      "FTRInitialize@0",
+      "_FTR_Initialize@0",
+      "FTR_Initialize@0",
+    ],
+    (loadedLib, name) => loadedLib.func("__stdcall", name, "int", []),
+  );
+
+  const terminate = resolveFunction(
+    lib,
+    "FTRTerminate",
+    [
+      "FTRTerminate",
+      "FTR_Terminate",
+      "FTRTerminateA",
+      "FTR_TerminateA",
+      "_FTRTerminate@0",
+      "FTRTerminate@0",
+      "_FTR_Terminate@0",
+      "FTR_Terminate@0",
+    ],
+    (loadedLib, name) => loadedLib.func("__stdcall", name, "void", []),
+  );
+
   // Nota: estos nombres pueden variar. Se pueden overridear con FTRAPI_SYMBOLS_JSON.
   // También hay DLLs que exportan símbolos decorados tipo stdcall: _Name@N o Name@N.
   const setBase = resolveFunction(
@@ -258,16 +290,59 @@ function loadMatcher() {
       loadedLib.func("__stdcall", name, "int", ["void *", "int", "FTR_DATA *"]),
   );
 
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+  let initResult = null;
+  let initError = null;
+  if (initialize?.fn) {
+    try {
+      initResult = initialize.fn();
+      if (debug) {
+        console.log(
+          `[DEBUG] FTRInitialize() result=${initResult} name=${initialize.name} dll=${dllPath}`,
+        );
+      }
+      if (typeof initResult === "number" && initResult !== 0) {
+        initError = `FTRInitialize retornó ${initResult}`;
+      }
+    } catch (e) {
+      initError = e?.message || String(e);
+    }
+  } else {
+    // Si no existe, asumimos que no es requerida en esta build.
+    initResult = 0;
+  }
+
+  // Intentar terminar cuando el proceso salga (best-effort)
+  if (terminate?.fn) {
+    const onceKey = "__marcaribe_ftr_terminate_hook";
+    if (!globalThis[onceKey]) {
+      globalThis[onceKey] = true;
+      process.once("exit", () => {
+        try {
+          terminate.fn();
+        } catch {
+          // ignore
+        }
+      });
+    }
+  }
+
   return {
     dllPath,
-    available: Boolean(setBase && identify),
+    available: Boolean(setBase && identify) && !initError,
     FTR_DATA,
+    FTRInitialize: initialize?.fn || null,
+    FTRTerminate: terminate?.fn || null,
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
     FTREnroll: enroll?.fn || null,
     ftrScanOpenDevice: scanOpen?.fn || null,
     ftrScanCloseDevice: scanClose?.fn || null,
     names: {
+      FTRInitialize: initialize?.name || null,
+      FTRTerminate: terminate?.name || null,
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
       FTREnroll: enroll?.name || null,
@@ -275,6 +350,8 @@ function loadMatcher() {
       ftrScanCloseDevice: scanClose?.name || null,
     },
     loadError: null,
+    initResult,
+    initError,
     triedPaths,
   };
 }
@@ -299,6 +376,8 @@ export function getMatcherInfo() {
         dllPath: cached.dllPath,
         names: cached.names,
         loadError: cached.loadError || null,
+        initResult: cached.initResult ?? null,
+        initError: cached.initError || null,
         triedPaths: Array.isArray(cached.triedPaths) ? cached.triedPaths : null,
       }
     : {
@@ -306,6 +385,8 @@ export function getMatcherInfo() {
         dllPath: defaultDllPath,
         names: null,
         loadError: nativeAvailable ? "unknown" : "koffi_not_available",
+        initResult: null,
+        initError: null,
         triedPaths: null,
       };
 }

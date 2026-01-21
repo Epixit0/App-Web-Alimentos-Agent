@@ -185,12 +185,18 @@ const foundInteresting = res.exports.filter((n) =>
   interesting.some((k) => n.toLowerCase() === k.toLowerCase()),
 );
 
-console.log(JSON.stringify({
-  file: path.resolve(dllPath),
-  arch: res.arch,
-  exportCount: res.exports.length,
-  interesting: foundInteresting,
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      file: path.resolve(dllPath),
+      arch: res.arch,
+      exportCount: res.exports.length,
+      interesting: foundInteresting,
+    },
+    null,
+    2,
+  ),
+);
 
 // Imprime lista completa si se pide
 if (String(process.env.DUMP_EXPORTS_FULL || "").trim() === "1") {
