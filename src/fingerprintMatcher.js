@@ -1017,6 +1017,44 @@ export async function createTemplateFromDevice(
   let lastResult = null;
   let lastDwSize = null;
 
+  function allocFtrData(templateBufferSize, outBuffer) {
+    // Koffi puede representar structs de distintas maneras según versión.
+    // Intentamos varias estrategias para obtener un FTR_DATA escribible.
+    try {
+      const a = koffi.alloc(cached.FTR_DATA, 1);
+      if (a && typeof a === "object") {
+        if (Object.prototype.hasOwnProperty.call(a, "dwSize")) {
+          a.dwSize = templateBufferSize;
+          a.pData = outBuffer;
+          return { outObj: a, outPtr: koffi.as(a, "FTR_DATA *") };
+        }
+        if (a[0] && typeof a[0] === "object") {
+          a[0].dwSize = templateBufferSize;
+          a[0].pData = outBuffer;
+          return { outObj: a[0], outPtr: koffi.as(a[0], "FTR_DATA *") };
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (typeof cached.FTR_DATA === "function") {
+        const o = cached.FTR_DATA();
+        if (o && typeof o === "object") {
+          o.dwSize = templateBufferSize;
+          o.pData = outBuffer;
+          return { outObj: o, outPtr: koffi.as(o, "FTR_DATA *") };
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const o = { dwSize: templateBufferSize, pData: outBuffer };
+    return { outObj: o, outPtr: koffi.as(o, "FTR_DATA *") };
+  }
+
   async function attemptEnroll(handle, attemptNo, label, purposeValue) {
     if (debug) {
       console.log(
@@ -1118,11 +1156,7 @@ export async function createTemplateFromDevice(
     }
 
     const outBuffer = Buffer.alloc(templateBufferSize);
-    // IMPORTANT: reservar memoria nativa para el struct (koffi.struct no siempre es "newable").
-    // Esto le da a la DLL un FTR_DATA* real para escribir dwSize/pData.
-    const out = koffi.alloc(cached.FTR_DATA);
-    out.dwSize = templateBufferSize;
-    out.pData = outBuffer;
+    const { outObj: out, outPtr } = allocFtrData(templateBufferSize, outBuffer);
 
     const forceEnrollX =
       String(process.env.FTR_ENROLL_FORCE_X || "").trim() === "1";
@@ -1130,8 +1164,7 @@ export async function createTemplateFromDevice(
     const hasEnrollX = Boolean(cached.FTREnrollX);
     const useEnrollXFirst = hasEnrollX && (forceEnrollX || !hasEnroll);
 
-    const callEnroll = () =>
-      cached.FTREnroll(handle, purposeValue, koffi.as(out, "FTR_DATA *"));
+    const callEnroll = () => cached.FTREnroll(handle, purposeValue, outPtr);
     const callEnrollX = () => {
       if (!cached.FTREnrollX) {
         throw new Error("FTREnrollX no está disponible");
@@ -1140,12 +1173,7 @@ export async function createTemplateFromDevice(
       const mode = String(process.env.FTR_ENROLLX_ARG4_MODE || "ptr").trim();
 
       if (mode === "null") {
-        return cached.FTREnrollX(
-          handle,
-          purposeValue,
-          koffi.as(out, "FTR_DATA *"),
-          null,
-        );
+        return cached.FTREnrollX(handle, purposeValue, outPtr, null);
       }
 
       if (mode === "int") {
@@ -1155,22 +1183,12 @@ export async function createTemplateFromDevice(
         const arg4Raw = process.env.FTR_ENROLLX_ARG4;
         const arg4Num = Number(arg4Raw);
         const arg4 = Number.isFinite(arg4Num) ? arg4Num : 0;
-        return cached.FTREnrollX_Int(
-          handle,
-          purposeValue,
-          koffi.as(out, "FTR_DATA *"),
-          arg4,
-        );
+        return cached.FTREnrollX_Int(handle, purposeValue, outPtr, arg4);
       }
 
       // default: ptr (int*)
       const outArg = [0];
-      return cached.FTREnrollX(
-        handle,
-        purposeValue,
-        koffi.as(out, "FTR_DATA *"),
-        outArg,
-      );
+      return cached.FTREnrollX(handle, purposeValue, outPtr, outArg);
     };
 
     // IMPORTANT: FTREnroll/FTREnrollX reciben FTR_DATA*; hay que pasar un puntero real.
