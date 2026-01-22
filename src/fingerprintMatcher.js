@@ -852,6 +852,11 @@ export async function createTemplateFromDevice(
   let lastDwSize = null;
 
   async function attemptEnroll(handle, attemptNo, label, purposeValue) {
+    if (debug) {
+      console.log(
+        `[DEBUG] attemptEnroll:start label=${label} attempt=${attemptNo} purpose=${purposeValue} handle=${handle ? "non-null" : "null"}`,
+      );
+    }
     if (typeof options?.preCapture === "function") {
       try {
         await options.preCapture();
@@ -1003,9 +1008,19 @@ export async function createTemplateFromDevice(
     let used = null;
     if (useEnrollXFirst) {
       used = "FTREnrollX";
+      if (debug) {
+        console.log(
+          `[DEBUG] llamando ${used}(${label}) purpose=${purposeValue}...`,
+        );
+      }
       result = callEnrollX();
     } else {
       used = "FTREnroll";
+      if (debug) {
+        console.log(
+          `[DEBUG] llamando ${used}(${label}) purpose=${purposeValue}...`,
+        );
+      }
       result = callEnroll();
     }
 
@@ -1046,6 +1061,11 @@ export async function createTemplateFromDevice(
       const tpl = outBuffer.slice(0, out.dwSize);
       const hasData = tpl.some((b) => b !== 0);
       if (hasData) return tpl;
+    }
+    if (debug) {
+      console.log(
+        `[DEBUG] attemptEnroll:end label=${label} attempt=${attemptNo} purpose=${purposeValue} tpl=null lastResult=${lastResult} dwSize=${lastDwSize}`,
+      );
     }
     return null;
   }
