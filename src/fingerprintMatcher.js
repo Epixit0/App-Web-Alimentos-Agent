@@ -37,9 +37,13 @@ function ensureMessagePumpAndWindow() {
   const enabled = String(process.env.FTR_MESSAGE_PUMP || "1").trim() === "1";
   if (!enabled) return cachedMessageHwnd;
 
+  const debug = String(process.env.DEBUG_FINGERPRINT || "").trim() === "1";
+
   try {
     const user32 = koffi.load("user32.dll");
     const k32 = koffi.load("kernel32.dll");
+
+    const GetLastError = k32.func("__stdcall", "GetLastError", "uint32", []);
 
     const GetModuleHandleA = k32.func(
       "__stdcall",
@@ -119,6 +123,16 @@ function ensureMessagePumpAndWindow() {
     );
 
     cachedMessageHwnd = hwnd || null;
+    if (debug) {
+      if (cachedMessageHwnd) {
+        console.log("[DEBUG] message-hwnd creado exitosamente");
+      } else {
+        const code = GetLastError();
+        console.log(
+          `[DEBUG] message-hwnd NO se pudo crear (CreateWindowExA retornó NULL). GetLastError=${code}`,
+        );
+      }
+    }
 
     if (cachedMessageHwnd && !messagePumpStarted) {
       messagePumpStarted = true;
@@ -156,9 +170,20 @@ function ensureMessagePumpAndWindow() {
           // ignore
         }
       }, pumpIntervalMs).unref?.();
+
+      if (debug) {
+        console.log(
+          `[DEBUG] message pump iniciado intervalMs=${pumpIntervalMs} maxMessages=${pumpMaxMessages}`,
+        );
+      }
     }
   } catch {
     cachedMessageHwnd = null;
+    if (debug) {
+      console.log(
+        "[DEBUG] message-hwnd: excepción creando ventana/message pump",
+      );
+    }
   }
 
   return cachedMessageHwnd;
