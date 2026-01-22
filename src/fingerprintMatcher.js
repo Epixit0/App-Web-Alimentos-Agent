@@ -276,7 +276,8 @@ function loadMatcher() {
       "_FTR_SetParam@8",
       "FTR_SetParam@8",
     ],
-    (loadedLib, name) => loadedLib.func("__stdcall", name, "int", ["int", "int"]),
+    (loadedLib, name) =>
+      loadedLib.func("__stdcall", name, "int", ["int", "int"]),
   );
 
   const getParam = resolveFunction(
@@ -402,6 +403,9 @@ function loadMatcher() {
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+  const logParamsOkOnly =
+    String(process.env.FTR_DUMP_PARAMS_OK_ONLY || "1").trim() !== "0";
 
   let initResult = null;
   let initError = null;
@@ -592,9 +596,7 @@ export async function createTemplateFromDevice(
       const parsed = safeJsonParse(getRaw);
       if (!parsed) return [];
       if (Array.isArray(parsed)) {
-        return parsed
-          .map((x) => Number(x))
-          .filter((n) => Number.isFinite(n));
+        return parsed.map((x) => Number(x)).filter((n) => Number.isFinite(n));
       }
       if (parsed && typeof parsed === "object") {
         return Object.keys(parsed)
@@ -610,7 +612,13 @@ export async function createTemplateFromDevice(
           const out = [0];
           const r = cached.FTRGetParam(id, out);
           if (debug) {
-            console.log(`[DEBUG] FTRGetParam(${id}) result=${r} value=${out[0]}`);
+            console.log(
+              `[DEBUG] FTRGetParam(${id}) result=${r} value=${out[0]}`,
+            );
+          } else if (r === 0 && (!logParamsOkOnly || out[0] !== 0)) {
+            console.log(`[INFO] FTRGetParam(${id}) value=${out[0]}`);
+          } else if (r === 0 && !logParamsOkOnly) {
+            console.log(`[INFO] FTRGetParam(${id}) value=${out[0]}`);
           }
         } catch (e) {
           if (debug) {
@@ -646,7 +654,13 @@ export async function createTemplateFromDevice(
           const out = [0];
           const r = cached.FTRGetParam(id, out);
           if (debug) {
-            console.log(`[DEBUG] FTRGetParam(${id}) result=${r} value=${out[0]}`);
+            console.log(
+              `[DEBUG] FTRGetParam(${id}) result=${r} value=${out[0]}`,
+            );
+          } else if (r === 0 && (!logParamsOkOnly || out[0] !== 0)) {
+            console.log(`[INFO] FTRGetParam(${id}) value=${out[0]}`);
+          } else if (r === 0 && !logParamsOkOnly) {
+            console.log(`[INFO] FTRGetParam(${id}) value=${out[0]}`);
           }
         } catch (e) {
           if (debug) {
