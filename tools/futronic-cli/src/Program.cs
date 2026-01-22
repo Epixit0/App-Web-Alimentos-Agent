@@ -274,6 +274,44 @@ internal static class Program
             }
         }
 
+        // Comandos que NO requieren --dll (solo utilidades de CLI)
+        if (cmd == "help" || cmd == "--help" || cmd == "-h" || cmd == "/?")
+        {
+            JsonOut.Print(new
+            {
+                ok = true,
+                stage = "help",
+                commands = new[] { "about", "help", "peexports", "scanframe", "capture", "enroll", "mtinit", "mtinit-probe" },
+                notes = new[]
+                {
+                    "Los comandos enroll/capture/mt* requieren --dll (FTRAPI.dll).",
+                    "peexports/about/help NO requieren --dll.",
+                    "Si ves 'Falta --dll' al correr peexports, estás ejecutando un .exe viejo: vuelve a publicar win-x86."
+                }
+            });
+            return 0;
+        }
+
+        if (cmd == "about")
+        {
+            var asm = typeof(Program).Assembly;
+            var ver = asm.GetName().Version?.ToString();
+            var loc = asm.Location;
+            JsonOut.Print(new
+            {
+                ok = true,
+                stage = "about",
+                name = asm.GetName().Name,
+                version = ver,
+                location = string.IsNullOrWhiteSpace(loc) ? null : loc,
+                is64Process = Environment.Is64BitProcess,
+                framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+                commands = new[] { "about", "help", "peexports", "scanframe", "capture", "enroll", "mtinit", "mtinit-probe" }
+            });
+            return 0;
+        }
+
         // Comando peexports: no requiere --dll ni cargar DLLs.
         if (cmd == "peexports")
         {
