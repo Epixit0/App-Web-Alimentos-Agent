@@ -223,6 +223,27 @@ function loadMatcher() {
       ]),
   );
 
+  const identifyN = resolveFunction(
+    lib,
+    "FTRIdentifyN",
+    [
+      "FTRIdentifyN",
+      "FTR_IdentifyN",
+      "FTRIdentifyNA",
+      "FTR_IdentifyNA",
+      "_FTRIdentifyN@12",
+      "FTRIdentifyN@12",
+      "_FTR_IdentifyN@12",
+      "FTR_IdentifyN@12",
+    ],
+    (loadedLib, name) =>
+      loadedLib.func("__stdcall", name, "int", [
+        "FTR_DATA *",
+        "int *",
+        "int *",
+      ]),
+  );
+
   const captureFrame = resolveFunction(
     lib,
     "FTRCaptureFrame",
@@ -428,6 +449,7 @@ function loadMatcher() {
     FTRGetParam: getParam?.fn || null,
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
+    FTRIdentifyN: identifyN?.fn || null,
     FTRCaptureFrame: captureFrame?.fn || null,
     FTREnroll: enroll?.fn || null,
     FTREnrollX: enrollXPtr?.fn || null,
@@ -441,6 +463,7 @@ function loadMatcher() {
       FTRGetParam: getParam?.name || null,
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
+      FTRIdentifyN: identifyN?.name || null,
       FTRCaptureFrame: captureFrame?.name || null,
       FTREnroll: enroll?.name || null,
       FTREnrollX: enrollXPtr?.name || null,
@@ -600,6 +623,43 @@ export async function createTemplateFromDevice(
     } else if (getIds.length && debug) {
       console.log(
         "[DEBUG] FTR_GET_PARAMS_JSON provisto pero FTRGetParam no está disponible en la DLL",
+      );
+    }
+
+    const rangeRaw = String(process.env.FTR_DUMP_PARAMS_RANGE || "").trim();
+    const rangeMatch = rangeRaw.match(/^\s*(\d+)\s*[-\.]{1,2}\s*(\d+)\s*$/);
+    if (rangeMatch && cached?.FTRGetParam) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      const maxCountRaw = Number(process.env.FTR_DUMP_PARAMS_MAX || 200);
+      const maxCount =
+        Number.isFinite(maxCountRaw) && maxCountRaw > 0
+          ? Math.min(maxCountRaw, 500)
+          : 200;
+
+      let count = 0;
+      for (let id = lo; id <= hi; id += 1) {
+        if (count >= maxCount) break;
+        try {
+          const out = [0];
+          const r = cached.FTRGetParam(id, out);
+          if (debug) {
+            console.log(`[DEBUG] FTRGetParam(${id}) result=${r} value=${out[0]}`);
+          }
+        } catch (e) {
+          if (debug) {
+            console.log(
+              `[DEBUG] FTRGetParam(${id}) lanzó error: ${e?.message || String(e)}`,
+            );
+          }
+        }
+        count += 1;
+      }
+    } else if (rangeMatch && debug && !cached?.FTRGetParam) {
+      console.log(
+        "[DEBUG] FTR_DUMP_PARAMS_RANGE provisto pero FTRGetParam no está disponible en la DLL",
       );
     }
 
