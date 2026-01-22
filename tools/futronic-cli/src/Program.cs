@@ -93,7 +93,7 @@ internal sealed record CliResult(int ExitCode, object Payload);
 
 internal static class WinFormsLoop
 {
-    public static CliResult RunOnUiThread(Func<IntPtr, CliResult> work)
+    public static CliResult RunOnUiThread(Func<IntPtr, CliResult> work, bool visible)
     {
         var tcs = new TaskCompletionSource<CliResult>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -104,16 +104,28 @@ internal static class WinFormsLoop
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
 
-                using var form = new Form
+                using var form = new Form();
+                if (visible)
                 {
-                    ShowInTaskbar = false,
-                    Opacity = 0,
-                    Width = 1,
-                    Height = 1,
-                    StartPosition = FormStartPosition.Manual,
-                    Left = -32000,
-                    Top = -32000
-                };
+                    // Modo visible (similar a WorkedEx): por si el SDK requiere una ventana visible.
+                    form.Text = "Futronic CLI";
+                    form.ShowInTaskbar = true;
+                    form.Opacity = 1;
+                    form.Width = 520;
+                    form.Height = 360;
+                    form.StartPosition = FormStartPosition.CenterScreen;
+                }
+                else
+                {
+                    // Modo oculto (default).
+                    form.ShowInTaskbar = false;
+                    form.Opacity = 0;
+                    form.Width = 1;
+                    form.Height = 1;
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Left = -32000;
+                    form.Top = -32000;
+                }
 
                 form.Load += (_, _) =>
                 {
@@ -170,6 +182,8 @@ internal static class Program
 
         var cmd = args[0].Trim().ToLowerInvariant();
         var opt = Args.Parse(args.Skip(1).ToArray());
+
+        var visible = Args.GetInt(opt, "visible", 0) != 0;
 
         var dllPath = Args.GetStr(opt, "dll");
         if (string.IsNullOrWhiteSpace(dllPath))
@@ -399,7 +413,28 @@ internal static class Program
                         }
 
                         scanHandle = open();
-                        scanInfo = new { handleMode, scanHandle = scanHandle.ToInt64(), scanDll = scanDllPath };
+                        // Diagnóstico scan API
+                        var scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModule, "ftrScanIsFingerPresent");
+                        var scanGetLastError = TryGetProc<ftrScanGetLastErrorDelegate>(scanModule, "ftrScanGetLastError");
+
+                        int? fingerPresent = null;
+                        int? scanLastError = null;
+                        if (scanHandle != IntPtr.Zero && scanIsFingerPresent != null)
+                        {
+                            try
+                            {
+                                var r = scanIsFingerPresent(scanHandle, out var present);
+                                // Si r != 0 no sabemos el contrato exacto, pero igual reportamos.
+                                fingerPresent = present;
+                            }
+                            catch { }
+                        }
+                        if (scanGetLastError != null)
+                        {
+                            try { scanLastError = scanGetLastError(); } catch { }
+                        }
+
+                        scanInfo = new { handleMode, scanHandle = scanHandle.ToInt64(), scanDll = scanDllPath, fingerPresent, scanLastError };
 
                         if (scanHandle == IntPtr.Zero)
                         {
@@ -660,10 +695,31 @@ internal static class Program
                             if (captureRepeat < 1) captureRepeat = 1;
 
                             var codes = new List<int>();
+                            var fingerHistory = new List<int?>();
+                            ftrScanIsFingerPresentDelegate? scanIsFingerPresent = null;
+                            if (scanHandle != IntPtr.Zero)
+                                scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModule, "ftrScanIsFingerPresent");
                             if (captureLoop)
                             {
                                 for (int i = 0; i < captureLoopMax; i++)
                                 {
+                                    if (scanHandle != IntPtr.Zero && scanIsFingerPresent != null)
+                                    {
+                                        try
+                                        {
+                                            _ = scanIsFingerPresent(scanHandle, out var present);
+                                            fingerHistory.Add(present);
+                                        }
+                                        catch
+                                        {
+                                            fingerHistory.Add(null);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        fingerHistory.Add(null);
+                                    }
+
                                     int r;
                                     if (apiRequested == "mt" && mtCapture != null)
                                         r = mtCapture(apiHandle, arg2, mtCaptureArg3);
@@ -707,6 +763,7 @@ internal static class Program
                                 captureArg2,
                                 arg2Used = arg2,
                                 codes,
+                                fingerHistory,
                                 setParams = setParamResults,
                                 paramsDump,
                                 scan = scanInfo
@@ -948,7 +1005,7 @@ internal static class Program
                             try { scanClose(scanHandle); } catch { }
                         }
                     }
-                });
+                }, visible);
 
                 JsonOut.Print(result.Payload);
                 return result.ExitCode;
@@ -994,6 +1051,12 @@ internal static class Program
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate void ftrScanCloseDeviceDelegate(IntPtr device);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ftrScanIsFingerPresentDelegate(IntPtr device, out int present);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ftrScanGetLastErrorDelegate();
 
     private static T? TryGetProc<T>(IntPtr module, string name) where T : class
     {
