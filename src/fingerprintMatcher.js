@@ -22,6 +22,29 @@ const defaultDllPath = path.join(__dirname, "../lib/FTRAPI.dll");
 
 const fallbackScanDllPath = path.join(__dirname, "../lib/ftrScanAPI.dll");
 
+let cachedConsoleHwnd = undefined;
+
+function getConsoleHwnd() {
+  if (cachedConsoleHwnd !== undefined) return cachedConsoleHwnd;
+  cachedConsoleHwnd = null;
+  if (process.platform !== "win32") return cachedConsoleHwnd;
+  if (!nativeAvailable || !koffi) return cachedConsoleHwnd;
+  try {
+    const k32 = koffi.load("kernel32.dll");
+    const GetConsoleWindow = k32.func(
+      "__stdcall",
+      "GetConsoleWindow",
+      "void *",
+      [],
+    );
+    const hwnd = GetConsoleWindow();
+    cachedConsoleHwnd = hwnd || null;
+  } catch {
+    cachedConsoleHwnd = null;
+  }
+  return cachedConsoleHwnd;
+}
+
 function resolveDllPath() {
   const fromEnv =
     typeof process.env.FTRAPI_DLL_PATH === "string" &&
@@ -708,6 +731,12 @@ export async function createTemplateFromDevice(
   // Permitimos configurar esos params desde config.json.env sin tocar código.
   applyParamsOnce();
 
+  const handleMode = String(process.env.FTR_HANDLE_MODE || "auto").trim();
+  const tryHwnd =
+    handleMode === "hwnd" ||
+    (handleMode === "auto" && process.platform === "win32");
+  const consoleHwnd = tryHwnd ? getConsoleHwnd() : null;
+
   const probeOn201 =
     String(process.env.FTR_PARAM_PROBE_ON_201 || "0").trim() === "1";
   const keepProbeChanges =
@@ -1012,29 +1041,28 @@ export async function createTemplateFromDevice(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     for (const purposeValue of purposeCandidates) {
-      // 1) Intento con el handle entregado por el scanner actual
-      if (deviceHandle) {
-        const tpl = await attemptEnroll(
-          deviceHandle,
-          attempt,
-          "scanner-handle",
-          purposeValue,
-        );
-        if (tpl) return tpl;
-      }
-
-      // 1.5) Algunas builds aceptan handle NULL (dispositivo/contexto implícito).
-      // Esto es seguro de probar y nos ayuda a diagnosticar incompatibilidad de handle.
+      // Selección de handle:
+      // - WorkedEx es GUI; es común que Futronic use HWND (GetConsoleWindow sirve en consola).
+      // - Algunos builds aceptan NULL.
+      // - Si el caller provee deviceHandle (scanAPI), se intenta primero en modo auto.
       const tryNullHandle =
         String(process.env.FTR_ENROLL_TRY_NULL_HANDLE || "1").trim() === "1";
+
+      const candidates = [];
+      if (handleMode === "scan" || handleMode === "auto") {
+        if (deviceHandle)
+          candidates.push({ h: deviceHandle, label: "scanner-handle" });
+      }
+      if (tryHwnd && consoleHwnd) {
+        candidates.push({ h: consoleHwnd, label: "console-hwnd" });
+      }
       if (tryNullHandle) {
-        const tplNull = await attemptEnroll(
-          null,
-          attempt,
-          "null-handle",
-          purposeValue,
-        );
-        if (tplNull) return tplNull;
+        candidates.push({ h: null, label: "null-handle" });
+      }
+
+      for (const c of candidates) {
+        const tpl = await attemptEnroll(c.h, attempt, c.label, purposeValue);
+        if (tpl) return tpl;
       }
 
       // 2) Si falla, reintenta abriendo el device desde este mismo DLL (FTRAPI.dll)
