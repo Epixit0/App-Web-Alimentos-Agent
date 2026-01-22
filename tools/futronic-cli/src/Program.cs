@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace FutronicCli;
@@ -74,6 +76,69 @@ internal static class JsonOut
     }
 }
 
+internal sealed record CliResult(int ExitCode, object Payload);
+
+internal static class WinFormsLoop
+{
+    public static CliResult RunOnUiThread(Func<IntPtr, CliResult> work)
+    {
+        var tcs = new TaskCompletionSource<CliResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+
+                using var form = new Form
+                {
+                    ShowInTaskbar = false,
+                    Opacity = 0,
+                    Width = 1,
+                    Height = 1,
+                    StartPosition = FormStartPosition.Manual,
+                    Left = -32000,
+                    Top = -32000
+                };
+
+                form.Load += (_, _) =>
+                {
+                    // Ejecutar en el hilo UI después de que exista el HWND.
+                    form.BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            var result = work(form.Handle);
+                            tcs.TrySetResult(result);
+                        }
+                        catch (Exception ex)
+                        {
+                            tcs.TrySetResult(new CliResult(13, new { ok = false, stage = "exception", error = ex.Message, type = ex.GetType().FullName }));
+                        }
+                        finally
+                        {
+                            try { form.Close(); } catch { }
+                        }
+                    }));
+                };
+
+                Application.Run(form);
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetResult(new CliResult(13, new { ok = false, stage = "exception", error = ex.Message, type = ex.GetType().FullName }));
+            }
+        });
+
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+}
+
 internal static class Program
 {
     [STAThread]
@@ -120,7 +185,10 @@ internal static class Program
             }
 
             var purpose = Args.GetInt(opt, "purpose", 3);
-            var timeoutMs = Args.GetInt(opt, "captureTimeoutMs", 0);
+            var captureArg2 = Args.GetInt(opt, "captureArg2", 0);
+            var doPreCapture = Args.GetInt(opt, "preCapture", 0) != 0;
+            var useNullHwnd = Args.GetInt(opt, "nullHwnd", 0) != 0;
+            var method = (Args.GetStr(opt, "method") ?? "enrollx").Trim().ToLowerInvariant();
 
             var bufSize = Args.GetInt(opt, "buf", 6144);
             var buf = new byte[bufSize];
@@ -134,47 +202,64 @@ internal static class Program
                     pData = pinned.AddrOfPinnedObject()
                 };
 
-                // Ventana oculta (HWND real) para SDKs que dependen de message loop.
-                using var form = new Form
-                {
-                    ShowInTaskbar = false,
-                    Opacity = 0,
-                    Width = 1,
-                    Height = 1
-                };
+                // Permitir setear params desde CLI: --param 4=1 --param 5=0
+                var rawParams = CollectMultiArgs(args, "--param", "--setparam");
+                var parsedParams = ParseParams(rawParams);
 
-                var hwnd = form.Handle;
-
-                if (timeoutMs > 0)
+                var result = WinFormsLoop.RunOnUiThread(hwndFromUi =>
                 {
-                    _ = Native.FTRCaptureFrame(hwnd, timeoutMs);
-                }
+                    var hwnd = useNullHwnd ? IntPtr.Zero : hwndFromUi;
 
-                int quality;
-                var r = Native.FTREnrollX(hwnd, purpose, ref data, out quality);
-                if (r == 0)
-                {
-                    var written = (int)data.dwSize;
-                    if (written > 0 && written <= buf.Length)
+                    foreach (var (id, value) in parsedParams)
                     {
-                        var tpl = Convert.ToBase64String(buf, 0, written);
-                        JsonOut.Print(new { ok = true, code = 0, quality, bytes = written, templateBase64 = tpl });
-                        return 0;
+                        _ = Native.FTRSetParam(id, value);
                     }
 
-                    JsonOut.Print(new
+                    int capCode = 0;
+                    if (doPreCapture)
                     {
-                        ok = false,
-                        stage = "enroll",
-                        code = 0,
-                        error = "dwSize inválido",
-                        dwSize = data.dwSize
-                    });
-                    return 11;
-                }
+                        capCode = Native.FTRCaptureFrame(hwnd, captureArg2);
+                    }
 
-                JsonOut.Print(new { ok = false, stage = "enroll", code = r, quality });
-                return 12;
+                    if (method == "enroll")
+                    {
+                        var rEnroll = Native.FTREnroll(hwnd, purpose, ref data);
+                        if (rEnroll == 0)
+                        {
+                            var written = (int)data.dwSize;
+                            if (written > 0 && written <= buf.Length)
+                            {
+                                var tpl = Convert.ToBase64String(buf, 0, written);
+                                return new CliResult(0, new { ok = true, code = 0, method = "enroll", bytes = written, templateBase64 = tpl, preCaptureCode = capCode });
+                            }
+
+                            return new CliResult(11, new { ok = false, stage = "enroll", code = 0, method = "enroll", error = "dwSize inválido", dwSize = data.dwSize, preCaptureCode = capCode });
+                        }
+
+                        return new CliResult(12, new { ok = false, stage = "enroll", code = rEnroll, method = "enroll", preCaptureCode = capCode });
+                    }
+                    else
+                    {
+                        int quality;
+                        var r = Native.FTREnrollX(hwnd, purpose, ref data, out quality);
+                        if (r == 0)
+                        {
+                            var written = (int)data.dwSize;
+                            if (written > 0 && written <= buf.Length)
+                            {
+                                var tpl = Convert.ToBase64String(buf, 0, written);
+                                return new CliResult(0, new { ok = true, code = 0, method = "enrollx", quality, bytes = written, templateBase64 = tpl, preCaptureCode = capCode });
+                            }
+
+                            return new CliResult(11, new { ok = false, stage = "enroll", code = 0, method = "enrollx", quality, error = "dwSize inválido", dwSize = data.dwSize, preCaptureCode = capCode });
+                        }
+
+                        return new CliResult(12, new { ok = false, stage = "enroll", code = r, method = "enrollx", quality, preCaptureCode = capCode });
+                    }
+                });
+
+                JsonOut.Print(result.Payload);
+                return result.ExitCode;
             }
             finally
             {
@@ -185,5 +270,34 @@ internal static class Program
         {
             try { Native.FTRTerminate(); } catch { }
         }
+    }
+
+    private static List<string> CollectMultiArgs(string[] argv, params string[] keys)
+    {
+        var list = new List<string>();
+        for (int i = 0; i < argv.Length; i++)
+        {
+            var a = argv[i];
+            if (!keys.Contains(a, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            if (i + 1 < argv.Length)
+                list.Add(argv[++i]);
+        }
+        return list;
+    }
+
+    private static List<(int id, int value)> ParseParams(List<string> raw)
+    {
+        var list = new List<(int id, int value)>();
+        foreach (var token in raw)
+        {
+            var parts = token.Split('=', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length != 2) continue;
+            if (!int.TryParse(parts[0], out var id)) continue;
+            if (!int.TryParse(parts[1], out var value)) continue;
+            list.Add((id, value));
+        }
+        return list;
     }
 }
