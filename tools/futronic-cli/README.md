@@ -112,14 +112,20 @@ Get-ChildItem -Recurse C:\FutronicSDK -Filter FTRAPI.dll | Select-Object -Expand
 - Elegir API (algunos SDKs traen también `MT*` y el demo usa ese motor):
 
 ```powershell
-# auto = intenta FTR* y si devuelve 201 prueba MT* (si existe)
-.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api auto
-
 # forzar MT*
 .\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api mt
 
 # forzar FTR*
 .\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api ftr
+```
+
+Notas MT\*:
+
+- Este SDK exporta `MTInitialize@4`, `MTTerminate@4`, `MTCaptureFrame@12`, `MTEnrollX@20` (según `scripts/dump-exports.js`).
+- Por eso el CLI expone knobs por si el SDK espera flags extra:
+
+```powershell
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api mt --mtInitArg 0 --mtTermArg 0 --mtEnrollArg5 0
 ```
 
 - Elegir método:

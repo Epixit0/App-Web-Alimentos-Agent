@@ -264,18 +264,27 @@ internal static class Program
         // Para evitar crashes por mismatch, NO hacemos fallback automático.
         var apiRequested = (Args.GetStr(opt, "api") ?? "ftr").Trim().ToLowerInvariant();
 
-        var mtInit = TryGetProc<InitDelegate>(ftrModule, "MTInitialize");
-        var mtTerm = TryGetProc<TerminateDelegate>(ftrModule, "MTTerminate");
-        var mtEnrollX = TryGetProc<EnrollXDelegate>(ftrModule, "MTEnrollX");
-        var mtEnroll = TryGetProc<EnrollDelegate>(ftrModule, "MTEnroll");
-        var mtCapture = TryGetProc<CaptureDelegate>(ftrModule, "MTCaptureFrame");
+        // MT* (según dump-exports):
+        // - MTInitialize stdcallArgBytes=4  => 1 arg (int)
+        // - MTTerminate  stdcallArgBytes=4  => 1 arg (int)
+        // - MTCaptureFrame stdcallArgBytes=12 => 3 args
+        // - MTEnrollX stdcallArgBytes=20 => 5 args
+        var mtInit = TryGetProc<MTInitDelegate>(ftrModule, "MTInitialize");
+        var mtTerm = TryGetProc<MTTerminateDelegate>(ftrModule, "MTTerminate");
+        var mtEnrollX = TryGetProc<MTEnrollXDelegate>(ftrModule, "MTEnrollX");
+        var mtCapture = TryGetProc<MTCaptureDelegate>(ftrModule, "MTCaptureFrame");
 
-        var hasMt = mtInit != null && mtTerm != null && (mtEnrollX != null || mtEnroll != null);
+        var hasMt = mtInit != null && mtTerm != null && mtEnrollX != null;
 
         bool mtInitialized = false;
 
         int init;
         string apiInitUsed;
+        var mtInitArg = Args.GetInt(opt, "mtInitArg", 0);
+        var mtTermArg = Args.GetInt(opt, "mtTermArg", 0);
+        var mtCaptureArg3 = Args.GetInt(opt, "mtCaptureArg3", 0);
+        var mtEnrollArg5 = Args.GetInt(opt, "mtEnrollArg5", 0);
+
         if (apiRequested == "mt")
         {
             if (!hasMt)
@@ -284,7 +293,7 @@ internal static class Program
                 Environment.CurrentDirectory = oldCwd;
                 return 10;
             }
-            init = mtInit!();
+            init = mtInit!(mtInitArg);
             apiInitUsed = "mt";
             mtInitialized = true;
         }
@@ -403,7 +412,7 @@ internal static class Program
                     {
                         if (apiRequested == "mt" && mtCapture != null)
                         {
-                            capCode = mtCapture(apiHandle, captureArg2);
+                            capCode = mtCapture(apiHandle, captureArg2, mtCaptureArg3);
                         }
                         else
                         {
@@ -419,17 +428,9 @@ internal static class Program
 
                     if (method == "enroll")
                     {
-                        int rEnroll;
-                        if (apiRequested == "mt" && mtEnroll != null)
-                        {
-                            rEnroll = mtEnroll(apiHandle, purpose, ref data);
-                            apiUsed = "mt";
-                        }
-                        else
-                        {
-                            rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
-                            apiUsed = "ftr";
-                        }
+                        // MTEnroll no está confirmado en este SDK (dump-exports no lo lista).
+                        var rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
+                        apiUsed = "ftr";
                         if (rEnroll == 0)
                         {
                             var written = (int)data.dwSize;
@@ -504,7 +505,7 @@ internal static class Program
                         int r;
                         if (apiRequested == "mt" && mtEnrollX != null)
                         {
-                            r = mtEnrollX(apiHandle, purpose, ref data, out quality);
+                            r = mtEnrollX(apiHandle, purpose, ref data, out quality, mtEnrollArg5);
                             apiUsed = "mt";
                         }
                         else
@@ -597,7 +598,7 @@ internal static class Program
         {
             try
             {
-                if (mtInitialized && mtTerm != null) mtTerm();
+                if (mtInitialized && mtTerm != null) mtTerm(mtTermArg);
                 else Native.FTRTerminate();
             }
             catch { }
@@ -607,19 +608,22 @@ internal static class Program
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int InitDelegate();
+    private delegate int MTInitDelegate(int arg1);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate void TerminateDelegate();
+    private delegate void MTTerminateDelegate(int arg1);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int CaptureDelegate(IntPtr handle, int arg2);
+    private delegate int MTCaptureDelegate(IntPtr handle, int arg2, int arg3);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int EnrollXDelegate(IntPtr handle, int purpose, ref Native.FTR_DATA outTemplate, out int quality);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int EnrollDelegate(IntPtr handle, int purpose, ref Native.FTR_DATA outTemplate);
+    private delegate int MTEnrollXDelegate(
+        IntPtr handle,
+        int purpose,
+        ref Native.FTR_DATA outTemplate,
+        out int quality,
+        int arg5
+    );
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate IntPtr ftrScanOpenDeviceDelegate();
