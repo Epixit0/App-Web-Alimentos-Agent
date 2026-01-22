@@ -141,6 +141,20 @@ Notas MT\*:
 .\dist\futronic-cli.exe enroll --dll $ftr --purpose 3 --preCapture 1 --captureArg2 1000
 ```
 
+- `CaptureFrame` devuelve 201 siempre (tu caso): usa probe para descubrir qué `FTRSetParam` cambia el resultado.
+
+```powershell
+# Probar con arg2 como timeout
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --probeCapture 1 --captureArg2Mode timeout --captureArg2 5000
+
+# Probar abriendo scan device pero pasando HWND (si tienes ftrScanAPI.dll)
+$scan = "C:\FutronicSDK\ftrScanAPI.dll"
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --scanDll $scan --handle hwnd+scan --purpose 3 --probeCapture 1 --captureArg2Mode timeout --captureArg2 5000
+
+# Puedes acotar ids/valores
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --probeCapture 1 --probeId 4 --probeId 5 --probeVal 0 --probeVal 1 --probeVal 2 --captureArg2Mode timeout --captureArg2 5000
+```
+
 - SetParam (puedes repetirlo):
 
 ```powershell

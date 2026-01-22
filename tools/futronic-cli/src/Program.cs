@@ -334,6 +334,10 @@ internal static class Program
             var captureArg2Mode = (Args.GetStr(opt, "captureArg2Mode") ?? "purpose").Trim().ToLowerInvariant();
             var captureRequireOk = Args.GetInt(opt, "captureRequireOk", 0) != 0;
 
+            var probeCapture = Args.GetInt(opt, "probeCapture", 0) != 0;
+            var probeKeep = Args.GetInt(opt, "probeKeep", 0) != 0;
+            var probeOncePerValue = Args.GetInt(opt, "probeOncePerValue", 1);
+
             var bufSize = Args.GetInt(opt, "buf", 6144);
             var buf = new byte[bufSize];
             var pinned = GCHandle.Alloc(buf, GCHandleType.Pinned);
@@ -459,6 +463,116 @@ internal static class Program
                     }
 
                     int? capCodeMt = null;
+
+                    // Modo probe: probar ids/valores y medir CaptureFrame
+                    if (probeCapture)
+                    {
+                        var probeIdRaw = CollectMultiArgs(args, "--probeId");
+                        var probeValRaw = CollectMultiArgs(args, "--probeVal");
+
+                        var probeIds = probeIdRaw
+                            .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
+                            .Where((n) => n.HasValue)
+                            .Select((n) => n!.Value)
+                            .ToList();
+                        if (!probeIds.Any()) probeIds = new List<int> { 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16 };
+
+                        var probeVals = probeValRaw
+                            .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
+                            .Where((n) => n.HasValue)
+                            .Select((n) => n!.Value)
+                            .ToList();
+                        if (!probeVals.Any()) probeVals = new List<int> { 0, 1, 2, 3, 5, 10 };
+
+                        int arg2 = captureArg2Mode switch
+                        {
+                            "purpose" => purpose,
+                            "timeout" => captureArg2,
+                            _ => captureArg2,
+                        };
+
+                        var originals = new Dictionary<int, int>();
+                        foreach (var id in probeIds)
+                        {
+                            try
+                            {
+                                var gr = Native.FTRGetParam(id, out var gv);
+                                if (gr == 0) originals[id] = gv;
+                            }
+                            catch { }
+                        }
+
+                        var probeResults = new List<object>();
+                        object? best = null;
+
+                        foreach (var id in probeIds)
+                        {
+                            foreach (var v in probeVals)
+                            {
+                                int setR;
+                                try { setR = Native.FTRSetParam(id, v); }
+                                catch (Exception ex)
+                                {
+                                    probeResults.Add(new { id, value = v, setCode = -1, setError = ex.Message });
+                                    continue;
+                                }
+
+                                var captures = new List<int>();
+                                for (int i = 0; i < Math.Max(1, probeOncePerValue); i++)
+                                {
+                                    int cr;
+                                    try { cr = Native.FTRCaptureFrame(apiHandle, arg2); }
+                                    catch { cr = -1; }
+                                    captures.Add(cr);
+                                }
+
+                                var item = new { id, value = v, setCode = setR, capture = captures };
+                                probeResults.Add(item);
+
+                                // señal: cualquier cosa != 201
+                                if (best == null && captures.Any((x) => x != 201))
+                                {
+                                    best = item;
+                                    if (!probeKeep)
+                                    {
+                                        // si no queremos seguir probando, salimos temprano
+                                        goto PROBE_DONE;
+                                    }
+                                }
+                            }
+                        }
+
+                    PROBE_DONE:
+                        if (!probeKeep)
+                        {
+                            // restaurar valores originales best-effort
+                            foreach (var kv in originals)
+                            {
+                                try { _ = Native.FTRSetParam(kv.Key, kv.Value); } catch { }
+                            }
+                        }
+
+                        return new CliResult(0, new
+                        {
+                            ok = true,
+                            stage = "probeCapture",
+                            purpose,
+                            hwndMode = useNullHwnd ? "null" : "winforms",
+                            handleMode,
+                            captureArg2Mode,
+                            captureArg2,
+                            arg2Used = arg2,
+                            probeOncePerValue,
+                            probeKeep,
+                            probeIds,
+                            probeVals,
+                            best,
+                            results = probeResults,
+                            setParams = setParamResults,
+                            paramsDump,
+                            scan = scanInfo
+                        });
+                    }
 
                     // Loop de captura estilo WorkedEx (muchos SDKs requieren capturar antes de Enroll)
                     var captureHistory = new List<int>();
