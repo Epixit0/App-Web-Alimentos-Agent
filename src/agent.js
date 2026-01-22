@@ -98,7 +98,9 @@ function applyEnvFromConfigFile() {
     if (typeof key !== "string" || !key.trim()) continue;
     if (
       raw == null ||
-      (typeof raw !== "string" && typeof raw !== "number" && typeof raw !== "boolean")
+      (typeof raw !== "string" &&
+        typeof raw !== "number" &&
+        typeof raw !== "boolean")
     ) {
       continue;
     }
