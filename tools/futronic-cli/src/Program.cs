@@ -297,12 +297,20 @@ internal static class Program
 
         bool mtInitialized = false;
 
+        // Para mt-scan: MTInitialize se hace después de abrir el scan device.
+        bool mtInitDeferred = apiRequested == "mt-scan";
+        int mtInitDeferredCode = 0;
+
         int init;
         string apiInitUsed;
         var mtInitArg = Args.GetInt(opt, "mtInitArg", 0);
         var mtTermArg = Args.GetInt(opt, "mtTermArg", 0);
         var mtCaptureArg3 = Args.GetInt(opt, "mtCaptureArg3", 0);
         var mtEnrollArg5 = Args.GetInt(opt, "mtEnrollArg5", 0);
+        var mtUseInitArgForCtx = Args.GetInt(opt, "mtUseInitArgForCtx", 1) != 0;
+
+        bool mtCaptureArg3Explicit = opt.ContainsKey("mtCaptureArg3");
+        bool mtEnrollArg5Explicit = opt.ContainsKey("mtEnrollArg5");
 
         if (apiRequested == "mt")
         {
@@ -315,6 +323,13 @@ internal static class Program
             init = mtInit!(mtInitArg);
             apiInitUsed = "mt";
             mtInitialized = true;
+        }
+        else if (apiRequested == "mt-scan")
+        {
+            // Diferimos MTInitialize hasta tener scanHandle.
+            // Inicializamos la API base (FTRInitialize) para que el módulo esté listo.
+            init = Native.FTRInitialize();
+            apiInitUsed = "ftr";
         }
         else
         {
@@ -448,6 +463,45 @@ internal static class Program
                         if (scanHandle == IntPtr.Zero)
                         {
                             return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", handleMode, scanDll = scanDllPath });
+                        }
+
+                        // Si se pidió mt-scan, inicializar MT* ahora que tenemos scanHandle.
+                        if (mtInitDeferred)
+                        {
+                            if (!hasMt)
+                            {
+                                return new CliResult(10, new { ok = false, stage = "mtInit", error = "Se pidió --api mt-scan pero no hay exports MT*", hasMt, apiRequested });
+                            }
+
+                            // Por defecto: usar scanHandle como argumento de MTInitialize (x86 => cabe en int).
+                            // Si quieres forzar otro valor, usa --mtInitArg.
+                            if (mtInitArg == 0)
+                            {
+                                mtInitArg = unchecked((int)scanHandle.ToInt64());
+                            }
+
+                            int r;
+                            try
+                            {
+                                r = mtInit!(mtInitArg);
+                            }
+                            catch (Exception ex)
+                            {
+                                return new CliResult(10, new { ok = false, stage = "mtInit", error = ex.Message, type = ex.GetType().FullName, mtInitArg });
+                            }
+
+                            mtInitDeferredCode = r;
+                            if (r != 0)
+                            {
+                                return new CliResult(10, new { ok = false, stage = "mtInit", code = r, mtInitArg, apiRequested });
+                            }
+                            mtInitialized = true;
+
+                            if (mtUseInitArgForCtx)
+                            {
+                                if (!mtCaptureArg3Explicit) mtCaptureArg3 = mtInitArg;
+                                if (!mtEnrollArg5Explicit) mtEnrollArg5 = mtInitArg;
+                            }
                         }
 
                         if (handleMode == "scan")
