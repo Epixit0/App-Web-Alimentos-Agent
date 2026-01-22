@@ -349,9 +349,18 @@ internal static class Program
             var getImageSize = TryGetProc<ftrScanGetImageSizeDelegate>(scanModuleOnly, "ftrScanGetImageSize");
             var getImage = TryGetProc<ftrScanGetImageDelegate>(scanModuleOnly, "ftrScanGetImage");
             var getImage2 = TryGetProc<ftrScanGetImage2Delegate>(scanModuleOnly, "ftrScanGetImage2");
-            var scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModuleOnly, "ftrScanIsFingerPresent");
-            var getLastErrStd = TryGetProc<ftrScanGetLastErrorDelegate>(scanModuleOnly, "ftrScanGetLastError");
-            var getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModuleOnly, "ftrScanGetLastError");
+            var diag = Args.GetInt(opt, "diag", 0) != 0;
+            ftrScanIsFingerPresentDelegate? scanIsFingerPresent = null;
+            ftrScanGetLastErrorDelegate? getLastErrStd = null;
+            ftrScanGetLastErrorCdeclDelegate? getLastErrCdecl = null;
+            if (diag)
+            {
+                // OJO: estas funciones han causado crashes por mismatch en algunas builds.
+                // Por eso están detrás de --diag 1.
+                scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModuleOnly, "ftrScanIsFingerPresent");
+                getLastErrStd = TryGetProc<ftrScanGetLastErrorDelegate>(scanModuleOnly, "ftrScanGetLastError");
+                getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModuleOnly, "ftrScanGetLastError");
+            }
 
             if (open == null || close == null)
             {
@@ -377,7 +386,8 @@ internal static class Program
             var waitMs = Args.GetInt(opt, "waitMs", 200);
             var bufSizeOverride = Args.GetInt(opt, "buf", 0);
             var copy = Args.GetInt(opt, "copy", 0) != 0;
-            var method = (Args.GetStr(opt, "method") ?? "auto").Trim().ToLowerInvariant();
+            // Default: getimage2 (más nuevo) y sin fallback para evitar crashes.
+            var method = (Args.GetStr(opt, "method") ?? "getimage2").Trim().ToLowerInvariant();
 
             IntPtr dev = IntPtr.Zero;
             try
@@ -387,8 +397,11 @@ internal static class Program
                 {
                     int? leStd = null;
                     int? leCdecl = null;
-                    try { if (getLastErrStd != null) leStd = getLastErrStd(); } catch { }
-                    try { if (getLastErrCdecl != null) leCdecl = getLastErrCdecl(); } catch { }
+                    if (diag)
+                    {
+                        try { if (getLastErrStd != null) leStd = getLastErrStd(); } catch { }
+                        try { if (getLastErrCdecl != null) leCdecl = getLastErrCdecl(); } catch { }
+                    }
                     JsonOut.Print(new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", scanDll = scanDllPathOnly, lastErrorStd = leStd, lastErrorCdecl = leCdecl });
                     return 14;
                 }
@@ -402,9 +415,12 @@ internal static class Program
                     int? leSizeCdecl = null;
                     int? fingerPresent = null;
                     try { rSize = getImageSize(dev, ref p); } catch { rSize = -9999; }
-                    try { if (scanIsFingerPresent != null) { _ = scanIsFingerPresent(dev, out var present); fingerPresent = present; } } catch { }
-                    try { if (getLastErrStd != null) leSizeStd = getLastErrStd(); } catch { }
-                    try { if (getLastErrCdecl != null) leSizeCdecl = getLastErrCdecl(); } catch { }
+                    if (diag)
+                    {
+                        try { if (scanIsFingerPresent != null) { _ = scanIsFingerPresent(dev, out var present); fingerPresent = present; } } catch { }
+                        try { if (getLastErrStd != null) leSizeStd = getLastErrStd(); } catch { }
+                        try { if (getLastErrCdecl != null) leSizeCdecl = getLastErrCdecl(); } catch { }
+                    }
 
                     int bufferSize;
                     if (bufSizeOverride > 0) bufferSize = bufSizeOverride;
@@ -439,16 +455,12 @@ internal static class Program
                         }
                         else
                         {
-                            // auto: probar getImage2 primero (más nuevo) y si falla, getImage.
+                            // Si el método es inválido o no está disponible, usar getImage2 si existe.
+                            // NO hacemos fallback a getImage automáticamente para evitar crashes.
                             if (getImage2 != null)
                             {
                                 api = "ftrScanGetImage2";
                                 rImg = getImage2(dev, unmanaged, ref p);
-                                if (rImg == 0 && getImage != null)
-                                {
-                                    api = "ftrScanGetImage";
-                                    rImg = getImage(dev, unmanaged, ref p);
-                                }
                             }
                             else
                             {
@@ -457,8 +469,11 @@ internal static class Program
                             }
                         }
 
-                        try { if (getLastErrStd != null) leImgStd = getLastErrStd(); } catch { }
-                        try { if (getLastErrCdecl != null) leImgCdecl = getLastErrCdecl(); } catch { }
+                        if (diag)
+                        {
+                            try { if (getLastErrStd != null) leImgStd = getLastErrStd(); } catch { }
+                            try { if (getLastErrCdecl != null) leImgCdecl = getLastErrCdecl(); } catch { }
+                        }
 
                         if (copy && rImg != 0)
                         {
@@ -498,6 +513,7 @@ internal static class Program
                         rImg,
                         api,
                         method,
+                        diag,
                         lastErrorImgStd = leImgStd,
                         lastErrorImgCdecl = leImgCdecl,
                         width = p.nWidth,
