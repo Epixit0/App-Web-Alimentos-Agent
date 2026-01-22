@@ -887,7 +887,11 @@ export async function createTemplateFromDevice(
             ? Math.min(capDelayRaw, 2000)
             : 150;
         const requireOk =
-          String(process.env.FTR_CAPTUREFRAME_REQUIRE_OK || "1").trim() !== "0";
+          String(process.env.FTR_CAPTUREFRAME_REQUIRE_OK || "0").trim() !== "0";
+        const blockEnrollOnNonZero =
+          String(
+            process.env.FTR_CAPTUREFRAME_BLOCK_ENROLL_ON_NONZERO || "0",
+          ).trim() === "1";
 
         const capArg2Mode = String(
           process.env.FTR_CAPTUREFRAME_ARG2_MODE || "timeout",
@@ -922,9 +926,16 @@ export async function createTemplateFromDevice(
         }
 
         if (requireOk && capResult !== 0) {
-          // Si la captura previa no se completó, evitamos llamar FTREnroll
-          // para no spamear 201 cuando el SDK requiere captura previa exitosa.
-          return null;
+          if (debug) {
+            console.log(
+              `[DEBUG] FTRCaptureFrame no retornó 0 (result=${capResult}); requireOk=1`,
+            );
+          }
+          if (blockEnrollOnNonZero) {
+            // Modo estricto: si la captura previa no se completó, evitamos FTREnroll.
+            return null;
+          }
+          // Modo no estricto (default): continuar a FTREnroll/FTREnrollX.
         }
       } catch (e) {
         if (debug) {
