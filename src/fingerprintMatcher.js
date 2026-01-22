@@ -1427,12 +1427,36 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
     score,
   );
 
-  if (identifyResult !== 0) {
+  // Algunas builds del SDK funcionan mejor con FTRIdentifyN.
+  // Si Identify falla y tenemos IdentifyN, reintentamos ahí.
+  let identifyNResult = null;
+  if (identifyResult !== 0 && typeof cached.FTRIdentifyN === "function") {
+    const matchedIndexN = [-1];
+    const scoreN = [0];
+    identifyNResult = cached.FTRIdentifyN(
+      koffi.as(probe, "FTR_DATA *"),
+      matchedIndexN,
+      scoreN,
+    );
+    if (identifyNResult === 0) {
+      matchedIndex[0] = matchedIndexN[0];
+      score[0] = scoreN[0];
+    }
+  }
+
+  if (identifyResult !== 0 && identifyNResult !== 0) {
+    const used = identifyNResult == null ? "FTRIdentify" : "FTRIdentify+FTRIdentifyN";
     return {
       matched: false,
-      error: `Error en FTRIdentify: ${identifyResult}`,
-      code: identifyResult,
+      error:
+        identifyNResult == null
+          ? `Error en FTRIdentify: ${identifyResult}`
+          : `Error en FTRIdentify: ${identifyResult} (también FTRIdentifyN: ${identifyNResult})`,
+      code: identifyNResult == null ? identifyResult : identifyNResult,
       details: {
+        used,
+        identifyResult,
+        identifyNResult,
         baseLen: baseBuf.length,
         probeLen: probeBuf.length,
         rawBaseLen: baseTemplate.length,

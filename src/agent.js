@@ -396,6 +396,9 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
   let checked = 0;
+  let comparable = 0;
+  let errorCount = 0;
+  let firstError = null;
   let bestScore = -Infinity;
   let bestIndex = null;
 
@@ -414,6 +417,18 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
       const result = await verifyTemplate(base, capturedTemplate);
       checked += 1;
 
+      if (result?.error) {
+        errorCount += 1;
+        if (!firstError) firstError = String(result.error);
+      }
+
+      if (
+        result?.matched ||
+        (result?.score != null && Number.isFinite(Number(result.score)))
+      ) {
+        comparable += 1;
+      }
+
       if (
         result?.score != null &&
         Number.isFinite(Number(result.score)) &&
@@ -425,7 +440,7 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
 
       if (debug && checked <= 5) {
         console.log(
-          `[DEBUG] match check #${checked} worker=${item?.workerId} idx=${result?.index} score=${result?.score} matched=${result?.matched}`,
+          `[DEBUG] match check #${checked} worker=${item?.workerId} idx=${result?.index} score=${result?.score} matched=${result?.matched} err=${result?.error || ""}`,
         );
       }
       if (result?.matched) {
@@ -445,8 +460,20 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
   if (debug) {
     const bestScoreText = bestScore === -Infinity ? "n/a" : String(bestScore);
     console.log(
-      `[DEBUG] duplicate-check complete: checked=${checked} bestScore=${bestScoreText} bestIndex=${bestIndex}`,
+      `[DEBUG] duplicate-check complete: checked=${checked} comparable=${comparable} errors=${errorCount} bestScore=${bestScoreText} bestIndex=${bestIndex} firstError=${firstError || ""}`,
     );
+  }
+
+  // Si había templates para comparar, pero ninguna comparación produjo score/match,
+  // es muy probable que estemos alimentando a Futronic con un formato inválido.
+  // En ese caso, fallar el enroll es más seguro que permitir duplicados.
+  if (checked > 0 && comparable === 0 && errorCount > 0) {
+    return {
+      duplicate: false,
+      error:
+        "No se pudo comparar la huella contra las existentes (todas las comparaciones fallaron). " +
+        (firstError || ""),
+    };
   }
 
   return { duplicate: false };
@@ -466,6 +493,9 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
   let checked = 0;
+  let comparable = 0;
+  let errorCount = 0;
+  let firstError = null;
   let best = {
     matched: false,
     score: -Infinity,
@@ -486,6 +516,18 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
 
       const result = await verifyTemplate(base, capturedTemplate);
       checked += 1;
+
+      if (result?.error) {
+        errorCount += 1;
+        if (!firstError) firstError = String(result.error);
+      }
+
+      if (
+        result?.matched ||
+        (result?.score != null && Number.isFinite(Number(result.score)))
+      ) {
+        comparable += 1;
+      }
 
       if (result?.matched) {
         const workerId = item?.workerId || null;
@@ -518,8 +560,17 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
   if (debug) {
     const bestScoreText = best.score === -Infinity ? "n/a" : String(best.score);
     console.log(
-      `[DEBUG] identify complete: checked=${checked} bestScore=${bestScoreText} bestWorker=${best.workerId || "n/a"}`,
+      `[DEBUG] identify complete: checked=${checked} comparable=${comparable} errors=${errorCount} bestScore=${bestScoreText} bestWorker=${best.workerId || "n/a"} firstError=${firstError || ""}`,
     );
+  }
+
+  if (checked > 0 && comparable === 0 && errorCount > 0) {
+    return {
+      matched: false,
+      error:
+        "No se pudo comparar la huella (todas las comparaciones fallaron). " +
+        (firstError || ""),
+    };
   }
 
   return {
@@ -540,6 +591,10 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
   }
 
   let cursor = null;
+  let checked = 0;
+  let comparable = 0;
+  let errorCount = 0;
+  let firstError = null;
   let best = { matched: false, score: -Infinity };
 
   for (;;) {
@@ -554,6 +609,20 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
       if (!base) continue;
 
       const result = await verifyTemplate(base, capturedTemplate);
+      checked += 1;
+
+      if (result?.error) {
+        errorCount += 1;
+        if (!firstError) firstError = String(result.error);
+      }
+
+      if (
+        result?.matched ||
+        (result?.score != null && Number.isFinite(Number(result.score)))
+      ) {
+        comparable += 1;
+      }
+
       if (result?.matched) {
         return { matched: true, score: result?.score };
       }
@@ -567,6 +636,16 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
   }
 
   if (best.score !== -Infinity) return best;
+
+  if (checked > 0 && comparable === 0 && errorCount > 0) {
+    return {
+      matched: false,
+      error:
+        "No se pudo comparar la huella para el trabajador (todas las comparaciones fallaron). " +
+        (firstError || ""),
+    };
+  }
+
   return { matched: false };
 }
 
