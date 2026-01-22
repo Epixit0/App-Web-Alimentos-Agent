@@ -23,10 +23,30 @@ Si tu SDK es **x86 (32-bit)**, publica así:
 dotnet publish -c Release -r win-x86 /p:PublishSingleFile=true
 ```
 
+Si al ejecutar el exe x86 te sale:
+
+> The framework 'Microsoft.NETCore.App', version '8.0.0' (x86) was not found
+
+entonces tienes 2 opciones:
+
+1. Publicar **self-contained** (recomendado, no depende del runtime instalado):
+
+```powershell
+dotnet publish .\FutronicCli.csproj -c Release -r win-x86 /p:PublishSingleFile=true --self-contained true -o .\dist-x86
+```
+
+2. Instalar el runtime .NET 8 x86 en esa PC.
+
 Si quieres evitar rutas largas y asegurar dónde queda el exe, usa `-o`:
 
 ```powershell
 dotnet publish .\FutronicCli.csproj -c Release -r win-x64 /p:PublishSingleFile=true -o .\dist
+```
+
+Para x86 con salida clara:
+
+```powershell
+dotnet publish .\FutronicCli.csproj -c Release -r win-x86 /p:PublishSingleFile=true -o .\dist-x86
 ```
 
 El exe queda en:
@@ -52,6 +72,13 @@ Si publicaste con `-o .\dist`, entonces:
 ```powershell
 $ftr = "C:\FutronicSDK\FTRAPI.dll"
 .\dist\futronic-cli.exe enroll --dll $ftr --purpose 3
+```
+
+Para x86:
+
+```powershell
+$ftr = "C:\FutronicSDK\FTRAPI.dll"
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3
 ```
 
 Nota: el CLI ajusta `CurrentDirectory` al folder de `--dll` y hace `LoadLibrary` por ruta completa para reducir problemas de dependencias.
