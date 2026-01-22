@@ -281,11 +281,12 @@ internal static class Program
             {
                 ok = true,
                 stage = "help",
-                commands = new[] { "about", "help", "peexports", "scanframe", "capture", "enroll", "mtinit", "mtinit-probe" },
+                commands = new[] { "about", "help", "peexports", "scanimage", "scanframe", "capture", "enroll", "mtinit", "mtinit-probe" },
                 notes = new[]
                 {
                     "Los comandos enroll/capture/mt* requieren --dll (FTRAPI.dll).",
                     "peexports/about/help NO requieren --dll.",
+                    "scanimage NO requiere --dll (solo --scanDll).",
                     "Si ves 'Falta --dll' al correr peexports, estás ejecutando un .exe viejo: vuelve a publicar win-x86."
                 }
             });
@@ -307,9 +308,176 @@ internal static class Program
                 is64Process = Environment.Is64BitProcess,
                 framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-                commands = new[] { "about", "help", "peexports", "scanframe", "capture", "enroll", "mtinit", "mtinit-probe" }
+                commands = new[] { "about", "help", "peexports", "scanimage", "scanframe", "capture", "enroll", "mtinit", "mtinit-probe" }
             });
             return 0;
+        }
+
+        // Comando scanimage: usa SOLO ftrScanAPI.dll para capturar imagen (sin FTRAPI.dll).
+        // Requiere: --scanDll C:\\FutronicSDK\\ftrScanAPI.dll
+        // Opcionales:
+        //   --tries 10 --waitMs 200 --buf 153600 --copy 1
+        if (cmd == "scanimage")
+        {
+            var scanDllPathOnly = Args.GetStr(opt, "scanDll");
+            if (string.IsNullOrWhiteSpace(scanDllPathOnly) || !File.Exists(scanDllPathOnly))
+            {
+                JsonOut.Print(new { ok = false, stage = "scanImage", error = "Falta --scanDll o no existe", scanDll = scanDllPathOnly });
+                return 2;
+            }
+
+            var scanDir = Path.GetDirectoryName(scanDllPathOnly);
+            if (!string.IsNullOrWhiteSpace(scanDir))
+            {
+                Native.SetDllDirectoryA(scanDir);
+                try { Environment.CurrentDirectory = scanDir; } catch { }
+            }
+
+            IntPtr scanModule = Native.LoadLibraryW(scanDllPathOnly);
+            if (scanModule == IntPtr.Zero)
+            {
+                var err = Marshal.GetLastWin32Error();
+                JsonOut.Print(new { ok = false, stage = "loadLibrary", error = "No se pudo cargar ftrScanAPI.dll", scanDll = scanDllPathOnly, win32 = err, is64Process = Environment.Is64BitProcess });
+                return 9;
+            }
+
+            var open = TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "ftrScanOpenDevice")
+                       ?? TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "FTRScanOpenDevice");
+            var close = TryGetProc<ftrScanCloseDeviceDelegate>(scanModule, "ftrScanCloseDevice")
+                        ?? TryGetProc<ftrScanCloseDeviceDelegate>(scanModule, "FTRScanCloseDevice");
+
+            var getImageSize = TryGetProc<ftrScanGetImageSizeDelegate>(scanModule, "ftrScanGetImageSize");
+            var getImage2 = TryGetProc<ftrScanGetImage2Delegate>(scanModule, "ftrScanGetImage2");
+            var getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModule, "ftrScanGetLastError");
+
+            if (open == null || close == null)
+            {
+                JsonOut.Print(new { ok = false, stage = "scanImage", error = "No se encontró ftrScanOpenDevice/ftrScanCloseDevice", scanDll = scanDllPathOnly });
+                return 14;
+            }
+            if (getImageSize == null || getImage2 == null)
+            {
+                JsonOut.Print(new
+                {
+                    ok = false,
+                    stage = "scanImage",
+                    error = "No se encontró ftrScanGetImageSize o ftrScanGetImage2 (revisa exports)",
+                    hasGetImageSize = getImageSize != null,
+                    hasGetImage2 = getImage2 != null,
+                    scanDll = scanDllPathOnly
+                });
+                return 14;
+            }
+
+            var tries = Args.GetInt(opt, "tries", 10);
+            var waitMs = Args.GetInt(opt, "waitMs", 200);
+            var bufSizeOverride = Args.GetInt(opt, "buf", 0);
+            var copy = Args.GetInt(opt, "copy", 0) != 0;
+
+            IntPtr dev = IntPtr.Zero;
+            try
+            {
+                dev = open();
+                if (dev == IntPtr.Zero)
+                {
+                    int? le = null;
+                    try { if (getLastErrCdecl != null) le = getLastErrCdecl(); } catch { }
+                    JsonOut.Print(new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", scanDll = scanDllPathOnly, lastError = le });
+                    return 14;
+                }
+
+                var attempts = new List<object>();
+                for (int i = 0; i < Math.Max(1, tries); i++)
+                {
+                    var p = new FTRSCAN_FRAME_PARAMETERS { nWidth = 0, nHeight = 0, nImageSize = 0, nResolution = 0 };
+                    int rSize;
+                    int? leSize = null;
+                    try { rSize = getImageSize(dev, ref p); } catch { rSize = -9999; }
+                    try { if (getLastErrCdecl != null) leSize = getLastErrCdecl(); } catch { }
+
+                    int bufferSize;
+                    if (bufSizeOverride > 0) bufferSize = bufSizeOverride;
+                    else if (p.nImageSize > 0) bufferSize = p.nImageSize;
+                    else if (p.nWidth > 0 && p.nHeight > 0) bufferSize = checked(p.nWidth * p.nHeight);
+                    else bufferSize = 153600;
+
+                    IntPtr unmanaged = IntPtr.Zero;
+                    int rImg;
+                    int? leImg = null;
+                    int copied = 0;
+                    string? imageB64 = null;
+                    string? copyWarning = null;
+                    string? copyError = null;
+
+                    try
+                    {
+                        unmanaged = Marshal.AllocHGlobal(bufferSize);
+                        rImg = getImage2(dev, unmanaged, ref p);
+                        try { if (getLastErrCdecl != null) leImg = getLastErrCdecl(); } catch { }
+
+                        if (copy && rImg != 0)
+                        {
+                            long desired = p.nImageSize > 0 ? p.nImageSize : (p.nWidth > 0 && p.nHeight > 0 ? (long)p.nWidth * (long)p.nHeight : 0);
+                            if (desired <= 0) copyWarning = "No se pudo inferir tamaño de imagen";
+                            else if (desired > bufferSize) copyWarning = $"Tamaño reportado ({desired}) excede buffer ({bufferSize}); no se copia.";
+                            else
+                            {
+                                copied = (int)desired;
+                                try
+                                {
+                                    var managed = new byte[copied];
+                                    Marshal.Copy(unmanaged, managed, 0, copied);
+                                    imageB64 = Convert.ToBase64String(managed);
+                                }
+                                catch (Exception ex)
+                                {
+                                    copyError = ex.Message;
+                                    imageB64 = null;
+                                    copied = 0;
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (unmanaged != IntPtr.Zero) Marshal.FreeHGlobal(unmanaged);
+                    }
+
+                    attempts.Add(new
+                    {
+                        i,
+                        rSize,
+                        lastErrorSize = leSize,
+                        rImg,
+                        lastErrorImg = leImg,
+                        width = p.nWidth,
+                        height = p.nHeight,
+                        imageSize = p.nImageSize,
+                        resolution = p.nResolution,
+                        bufferSize,
+                        copy,
+                        copied,
+                        copyWarning,
+                        copyError,
+                        imageB64
+                    });
+
+                    if (rImg != 0 && p.nWidth > 0 && p.nHeight > 0)
+                        break;
+
+                    Thread.Sleep(Math.Max(0, waitMs));
+                }
+
+                JsonOut.Print(new { ok = true, stage = "scanImage", scanDll = scanDllPathOnly, attempts });
+                return 0;
+            }
+            finally
+            {
+                if (dev != IntPtr.Zero)
+                {
+                    try { close(dev); } catch { }
+                }
+            }
         }
 
         // Comando peexports: no requiere --dll ni cargar DLLs.
@@ -1552,6 +1720,15 @@ internal static class Program
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int ftrScanGetLastErrorDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ftrScanGetLastErrorCdeclDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ftrScanGetImageSizeDelegate(IntPtr device, ref FTRSCAN_FRAME_PARAMETERS pParams);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ftrScanGetImage2Delegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
 
     private static T? TryGetProc<T>(IntPtr module, string name) where T : class
     {
