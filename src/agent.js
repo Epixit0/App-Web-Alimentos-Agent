@@ -452,6 +452,82 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
   return { duplicate: false };
 }
 
+async function identifyAcrossWorkers(runtime, capturedTemplate) {
+  if (!isMatcherAvailable()) {
+    const info = getMatcherInfo();
+    return {
+      matched: false,
+      error:
+        "El agente no tiene disponible el motor de comparación (FTRAPI.dll/exports). " +
+        `dllPath=${info.dllPath} exports=${JSON.stringify(info.names)}`,
+    };
+  }
+
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  let checked = 0;
+  let best = {
+    matched: false,
+    score: -Infinity,
+    workerId: null,
+    workerName: null,
+  };
+
+  let cursor = null;
+  for (;;) {
+    const { items, nextCursor } = await listTemplates(runtime, {
+      limit: "200",
+      ...(cursor ? { cursor } : {}),
+    });
+
+    for (const item of items) {
+      const base = decodeTemplateFromApi(item);
+      if (!base) continue;
+
+      const result = await verifyTemplate(base, capturedTemplate);
+      checked += 1;
+
+      if (result?.matched) {
+        const workerId = item?.workerId || null;
+        const workerName = item?.workerName || workerId || null;
+        if (debug) {
+          console.log(
+            `[DEBUG] identify match: checked=${checked} worker=${workerId} score=${result?.score}`,
+          );
+        }
+        return { matched: true, score: result?.score, workerId, workerName };
+      }
+
+      if (
+        result?.score != null &&
+        Number(result.score) > (best.score ?? -Infinity)
+      ) {
+        best = {
+          matched: false,
+          score: Number(result.score),
+          workerId: item?.workerId || null,
+          workerName: item?.workerName || null,
+        };
+      }
+    }
+
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+
+  if (debug) {
+    const bestScoreText = best.score === -Infinity ? "n/a" : String(best.score);
+    console.log(
+      `[DEBUG] identify complete: checked=${checked} bestScore=${bestScoreText} bestWorker=${best.workerId || "n/a"}`,
+    );
+  }
+
+  return {
+    matched: false,
+    score: best.score !== -Infinity ? best.score : undefined,
+  };
+}
+
 async function verifyForWorker(runtime, workerId, capturedTemplate) {
   if (!isMatcherAvailable()) {
     const info = getMatcherInfo();
@@ -533,7 +609,7 @@ async function capture(job) {
   // Recomendado cuando la captura vía FTRAPI/ftrScanAPI está inestable.
   if (
     enrollProvider === "tml" &&
-    (jobType === "enroll" || jobType === "verify")
+    (jobType === "enroll" || jobType === "verify" || jobType === "identify")
   ) {
     const tmlPathExplicit = String(process.env.FTR_TML_PATH || "").trim();
     const tmlDir = String(
@@ -615,7 +691,7 @@ async function capture(job) {
   // Esto evita FFI frágil en Node y replica mejor un flujo tipo WorkedEx.
   if (
     enrollProvider === "cli" &&
-    (jobType === "enroll" || jobType === "verify")
+    (jobType === "enroll" || jobType === "verify" || jobType === "identify")
   ) {
     const exePath = String(process.env.FTR_CLI_EXE || "").trim();
     const dllPath = String(process.env.FTRAPI_DLL_PATH || "").trim();
@@ -655,7 +731,10 @@ async function capture(job) {
   // Modo estilo WorkedEx: no abrir ftrScanAPI.dll para evitar que el dispositivo quede
   // tomado por el driver de escaneo cuando FTRAPI.dll intenta capturar/enrolar.
   // Esto solo aplica a enroll/verify (templates del SDK).
-  if (!useScanApi && (jobType === "enroll" || jobType === "verify")) {
+  if (
+    !useScanApi &&
+    (jobType === "enroll" || jobType === "verify" || jobType === "identify")
+  ) {
     try {
       const tpl = await createTemplateFromDevice(null, jobType, {
         preCapture: null,
@@ -678,7 +757,11 @@ async function capture(job) {
     // templates reales del SDK (no el frame crudo). Los frames crudos suelen causar
     // errores en el matcher y nunca detectan duplicados.
 
-    if (jobType === "enroll" || jobType === "verify") {
+    if (
+      jobType === "enroll" ||
+      jobType === "verify" ||
+      jobType === "identify"
+    ) {
       const debug =
         String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
 
@@ -928,6 +1011,13 @@ while (true) {
         job.workerId,
         template,
       );
+      await submitCapture(effectiveRuntime, job._id, {
+        agentVerified: true,
+        verifyResult: result,
+      });
+      console.log(`Job completado: ${job._id}`);
+    } else if (job.type === "identify") {
+      const result = await identifyAcrossWorkers(effectiveRuntime, template);
       await submitCapture(effectiveRuntime, job._id, {
         agentVerified: true,
         verifyResult: result,
