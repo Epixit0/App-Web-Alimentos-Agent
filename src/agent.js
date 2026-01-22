@@ -386,28 +386,6 @@ function decodeTemplateFromApi(item) {
 
   if (!Buffer.isBuffer(buf) || buf.length === 0) return null;
 
-  // Si el template viene comprimido en Gzip (encabezado H4sI...), lo descomprimimos.
-  // Esto es necesario porque el backend está guardando los templates comprimidos.
-  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
-    try {
-      const out = zlib.gunzipSync(buf);
-      if (debug) {
-        console.log(
-          `[DEBUG] template decode: gzip ok raw=${buf.length} bytes -> tpl=${out.length} bytes`,
-        );
-      }
-      return out;
-    } catch (e) {
-      if (debug) {
-        console.log(
-          `[DEBUG] template decode: gzip FAIL raw=${buf.length} bytes err=${e?.message || String(e)}`,
-        );
-      }
-      // Si falla la descompresión, devolvemos el buffer crudo para que el matcher falle explícitamente.
-      return buf;
-    }
-  }
-
   if (debug) {
     console.log(`[DEBUG] template decode: raw=${buf.length} bytes (no gzip)`);
   }
