@@ -572,6 +572,25 @@ function loadMatcher() {
         "int",
         "FTR_DATA *",
         "int *",
+      }),
+  );
+
+  const verify = resolveFunction(
+    lib,
+    "FTRVerify",
+    [
+      "FTRVerify",
+      "FTR_Verify",
+      "_FTRVerify@12",
+      "FTRVerify@12",
+      "_FTR_Verify@12",
+      "FTR_Verify@12",
+    ],
+    (loadedLib, name) =>
+      loadedLib.func("__stdcall", name, "int", [
+        "FTR_DATA *",
+        "FTR_DATA *",
+        "int *",
       ]),
   );
 
@@ -646,6 +665,7 @@ function loadMatcher() {
     FTREnroll: enroll?.fn || null,
     FTREnrollX: enrollXPtr?.fn || null,
     FTREnrollX_Int: enrollXInt?.fn || null,
+    FTRVerify: verify?.fn || null,
     ftrScanOpenDevice: scanOpen?.fn || null,
     ftrScanCloseDevice: scanClose?.fn || null,
     names: {
@@ -659,6 +679,7 @@ function loadMatcher() {
       FTRCaptureFrame: captureFrame?.name || null,
       FTREnroll: enroll?.name || null,
       FTREnrollX: enrollXPtr?.name || null,
+      FTRVerify: verify?.name || null,
       ftrScanOpenDevice: scanOpen?.name || null,
       ftrScanCloseDevice: scanClose?.name || null,
     },
@@ -877,12 +898,6 @@ export async function createTemplateFromDevice(
       return;
     }
     for (const { id, value } of params) {
-      if (id === 4) {
-        if (debug) {
-          console.log(`[DEBUG] Ignorando FTRSetParam(4, ${value}) para prueba.`);
-        }
-        continue;
-      }
       try {
         const r = cached.FTRSetParam(id, value);
         if (debug) {
@@ -1359,6 +1374,36 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
 
   const baseBuf = baseTemplate;
   const probeBuf = probeTemplate;
+
+  // --- Nueva ruta: usar FTRVerify si está disponible (preferido para 1-a-1) ---
+  if (cached.FTRVerify) {
+    const base = { dwSize: baseBuf.length, pData: baseBuf };
+    const probe = { dwSize: probeBuf.length, pData: probeBuf };
+    const score = [0];
+
+    const verifyResult = cached.FTRVerify(
+      koffi.as(probe, "FTR_DATA *"),
+      koffi.as(base, "FTR_DATA *"),
+      score,
+    );
+
+    if (verifyResult === 0) {
+      const sc = score[0];
+      // FTRVerify no devuelve "matched", solo un score.
+      // Usamos un umbral para decidir si es match. El default del SDK suele ser bajo.
+      // Un valor como 100 es un punto de partida razonable. Se puede ajustar.
+      const scoreThresholdRaw = Number(
+        process.env.FTR_VERIFY_SCORE_THRESHOLD || 100,
+      );
+      const scoreThreshold = Number.isFinite(scoreThresholdRaw)
+        ? scoreThresholdRaw
+        : 100;
+      const matched = sc >= scoreThreshold;
+
+      return { matched, score: sc, used: "FTRVerify" };
+    }
+  }
+  // --- Fin nueva ruta ---
 
   const base = { dwSize: baseBuf.length, pData: baseBuf };
   const setResult = cached.FTRSetBaseTemplate(koffi.as(base, "FTR_DATA *"));
