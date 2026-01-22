@@ -7,8 +7,7 @@
     "FINGERPRINT_AGENT_DEBUG_MATCH": "1",
     "FTR_USE_SCANAPI": "1",
     "FTR_TRY_CAPTUREFRAME": "0",
-    "FTR_SET_PARAMS_JSON": "{\\"4\\": 1, \\"12\\": 10, \\"13\\": 1}",
-
+    "FTR_SET_PARAMS_JSON": "{\"4\": 1, \"12\": 10, \"13\": 1}",
     "FTR_PARAM_PROBE_ON_201": "1",
     "FTR_PARAM_PROBE_KEEP": "1"
   }
