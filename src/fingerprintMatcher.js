@@ -877,6 +877,12 @@ export async function createTemplateFromDevice(
       return;
     }
     for (const { id, value } of params) {
+      if (id === 4) {
+        if (debug) {
+          console.log(`[DEBUG] Ignorando FTRSetParam(4, ${value}) para prueba.`);
+        }
+        continue;
+      }
       try {
         const r = cached.FTRSetParam(id, value);
         if (debug) {
