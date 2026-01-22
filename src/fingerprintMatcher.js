@@ -708,6 +708,117 @@ export async function createTemplateFromDevice(
   // Permitimos configurar esos params desde config.json.env sin tocar código.
   applyParamsOnce();
 
+  const probeOn201 =
+    String(process.env.FTR_PARAM_PROBE_ON_201 || "0").trim() === "1";
+  const keepProbeChanges =
+    String(process.env.FTR_PARAM_PROBE_KEEP || "0").trim() === "1";
+  let didProbeOnce = false;
+
+  function parseJsonArrayEnv(envName, fallback) {
+    const raw = process.env[envName];
+    if (!raw || typeof raw !== "string") return fallback;
+    const parsed = safeJsonParse(raw);
+    return Array.isArray(parsed) ? parsed : fallback;
+  }
+
+  function getProbeParamIds() {
+    const fallbackIds = [4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16];
+    const arr = parseJsonArrayEnv("FTR_PARAM_PROBE_IDS_JSON", fallbackIds);
+    return arr
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+  }
+
+  function getProbeValues() {
+    const fallbackValues = [1, 2, 3, 5, 10];
+    const arr = parseJsonArrayEnv(
+      "FTR_PARAM_PROBE_VALUES_JSON",
+      fallbackValues,
+    );
+    return arr.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  }
+
+  function tryProbeParams(handle, label, purposeValue) {
+    if (!probeOn201) return;
+    if (didProbeOnce) return;
+    if (!cached?.FTRSetParam || !cached?.FTRGetParam) return;
+    if (!cached?.FTRCaptureFrame) return;
+
+    didProbeOnce = true;
+
+    const ids = getProbeParamIds();
+    const values = getProbeValues();
+    if (!ids.length || !values.length) return;
+
+    const original = new Map();
+    for (const id of ids) {
+      try {
+        const out = [0];
+        const r = cached.FTRGetParam(id, out);
+        if (r === 0) original.set(id, out[0]);
+      } catch {
+        // ignore
+      }
+    }
+
+    console.log(
+      `[INFO] Probe FTRSetParam iniciado (ids=${ids.length}, values=${values.length})`,
+    );
+
+    let best = null;
+    for (const id of ids) {
+      for (const v of values) {
+        const prev = original.has(id) ? original.get(id) : null;
+        if (prev !== null && prev === v) continue;
+        try {
+          const setR = cached.FTRSetParam(id, v);
+          const capR = cached.FTRCaptureFrame(handle, purposeValue);
+          if (debug) {
+            console.log(
+              `[DEBUG] Probe: SetParam(${id},${v}) setResult=${setR} CaptureFrame(${label})=${capR}`,
+            );
+          }
+
+          // Heurística: cualquier cosa distinta de 201 ya es una señal.
+          if (capR !== 201) {
+            best = { id, value: v, setResult: setR, captureResult: capR };
+            break;
+          }
+        } catch (e) {
+          if (debug) {
+            console.log(
+              `[DEBUG] Probe: SetParam(${id},${v}) lanzó error: ${e?.message || String(e)}`,
+            );
+          }
+        }
+      }
+      if (best) break;
+    }
+
+    if (best) {
+      console.log(
+        `[INFO] Probe encontró candidato: id=${best.id} value=${best.value} (CaptureFrame result=${best.captureResult})`,
+      );
+    } else {
+      console.log(
+        "[INFO] Probe no encontró cambios (CaptureFrame siguió en 201)",
+      );
+    }
+
+    if (!keepProbeChanges) {
+      for (const [id, prev] of original.entries()) {
+        try {
+          cached.FTRSetParam(id, prev);
+        } catch {
+          // ignore
+        }
+      }
+      if (best) {
+        console.log("[INFO] Probe revirtió FTRSetParam a valores originales");
+      }
+    }
+  }
+
   let lastResult = null;
   let lastDwSize = null;
 
@@ -737,6 +848,10 @@ export async function createTemplateFromDevice(
           console.log(
             `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) purpose=${purposeValue} result=${capResult}`,
           );
+        }
+
+        if (capResult === 201) {
+          tryProbeParams(capHandle, capHandle ? label : "null", purposeValue);
         }
       } catch (e) {
         if (debug) {
