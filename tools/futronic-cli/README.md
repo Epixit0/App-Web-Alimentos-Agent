@@ -78,6 +78,7 @@ $ftr = "C:\FutronicSDK\FTRAPI.dll"
 Salida (stdout):
 
 - JSON con `ok`, `code`, y si `ok=true`, `templateBase64`.
+- En modo debug también incluye `setParams` (resultado de cada `FTRSetParam`) y `preCaptureCode`.
 
 ## Nota
 

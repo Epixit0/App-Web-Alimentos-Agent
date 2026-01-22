@@ -210,9 +210,11 @@ internal static class Program
                 {
                     var hwnd = useNullHwnd ? IntPtr.Zero : hwndFromUi;
 
+                    var setParamResults = new List<object>();
                     foreach (var (id, value) in parsedParams)
                     {
-                        _ = Native.FTRSetParam(id, value);
+                        var sp = Native.FTRSetParam(id, value);
+                        setParamResults.Add(new { id, value, code = sp });
                     }
 
                     int capCode = 0;
@@ -230,13 +232,46 @@ internal static class Program
                             if (written > 0 && written <= buf.Length)
                             {
                                 var tpl = Convert.ToBase64String(buf, 0, written);
-                                return new CliResult(0, new { ok = true, code = 0, method = "enroll", bytes = written, templateBase64 = tpl, preCaptureCode = capCode });
+                                return new CliResult(0, new
+                                {
+                                    ok = true,
+                                    code = 0,
+                                    method = "enroll",
+                                    purpose,
+                                    hwndMode = useNullHwnd ? "null" : "winforms",
+                                    bytes = written,
+                                    templateBase64 = tpl,
+                                    preCaptureCode = capCode,
+                                    setParams = setParamResults
+                                });
                             }
 
-                            return new CliResult(11, new { ok = false, stage = "enroll", code = 0, method = "enroll", error = "dwSize inválido", dwSize = data.dwSize, preCaptureCode = capCode });
+                            return new CliResult(11, new
+                            {
+                                ok = false,
+                                stage = "enroll",
+                                code = 0,
+                                method = "enroll",
+                                purpose,
+                                hwndMode = useNullHwnd ? "null" : "winforms",
+                                error = "dwSize inválido",
+                                dwSize = data.dwSize,
+                                preCaptureCode = capCode,
+                                setParams = setParamResults
+                            });
                         }
 
-                        return new CliResult(12, new { ok = false, stage = "enroll", code = rEnroll, method = "enroll", preCaptureCode = capCode });
+                        return new CliResult(12, new
+                        {
+                            ok = false,
+                            stage = "enroll",
+                            code = rEnroll,
+                            method = "enroll",
+                            purpose,
+                            hwndMode = useNullHwnd ? "null" : "winforms",
+                            preCaptureCode = capCode,
+                            setParams = setParamResults
+                        });
                     }
                     else
                     {
@@ -248,13 +283,49 @@ internal static class Program
                             if (written > 0 && written <= buf.Length)
                             {
                                 var tpl = Convert.ToBase64String(buf, 0, written);
-                                return new CliResult(0, new { ok = true, code = 0, method = "enrollx", quality, bytes = written, templateBase64 = tpl, preCaptureCode = capCode });
+                                return new CliResult(0, new
+                                {
+                                    ok = true,
+                                    code = 0,
+                                    method = "enrollx",
+                                    purpose,
+                                    hwndMode = useNullHwnd ? "null" : "winforms",
+                                    quality,
+                                    bytes = written,
+                                    templateBase64 = tpl,
+                                    preCaptureCode = capCode,
+                                    setParams = setParamResults
+                                });
                             }
 
-                            return new CliResult(11, new { ok = false, stage = "enroll", code = 0, method = "enrollx", quality, error = "dwSize inválido", dwSize = data.dwSize, preCaptureCode = capCode });
+                            return new CliResult(11, new
+                            {
+                                ok = false,
+                                stage = "enroll",
+                                code = 0,
+                                method = "enrollx",
+                                purpose,
+                                hwndMode = useNullHwnd ? "null" : "winforms",
+                                quality,
+                                error = "dwSize inválido",
+                                dwSize = data.dwSize,
+                                preCaptureCode = capCode,
+                                setParams = setParamResults
+                            });
                         }
 
-                        return new CliResult(12, new { ok = false, stage = "enroll", code = r, method = "enrollx", quality, preCaptureCode = capCode });
+                        return new CliResult(12, new
+                        {
+                            ok = false,
+                            stage = "enroll",
+                            code = r,
+                            method = "enrollx",
+                            purpose,
+                            hwndMode = useNullHwnd ? "null" : "winforms",
+                            quality,
+                            preCaptureCode = capCode,
+                            setParams = setParamResults
+                        });
                     }
                 });
 
