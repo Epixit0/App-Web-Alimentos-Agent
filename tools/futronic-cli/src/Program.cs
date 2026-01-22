@@ -578,7 +578,12 @@ internal static class Program
             var diag = Args.GetInt(opt, "diag", 0) != 0;
             var scanVisible = Args.GetInt(opt, "visible", 0) != 0;
 
-            var result = WinFormsLoop.RunOnUiThread(_hwnd =>
+            // Por defecto NO usamos WinFormsLoop para scanframe.
+            // Si se usa, una corrupción de stack por P/Invoke puede crashear luego en DispatchMessage.
+            // Para forzar WinFormsLoop: --winforms 1 (o si se usa --visible 1).
+            var useWinForms = Args.GetInt(opt, "winforms", scanVisible ? 1 : 0) != 0;
+
+            CliResult DoWork()
             {
                 IntPtr scanModuleOnly = Native.LoadLibraryW(scanDllPathOnly);
                 if (scanModuleOnly == IntPtr.Zero)
@@ -596,6 +601,8 @@ internal static class Program
                                   ?? TryGetProc<ftrScanGetFrameStdCallDelegate>(scanModuleOnly, "FTRScanGetFrame");
                 var getFrameCdecl = TryGetProc<ftrScanGetFrameCdeclDelegate>(scanModuleOnly, "ftrScanGetFrame")
                                     ?? TryGetProc<ftrScanGetFrameCdeclDelegate>(scanModuleOnly, "FTRScanGetFrame");
+
+                var getImageSize = TryGetProc<ftrScanGetImageSizeDelegate>(scanModuleOnly, "ftrScanGetImageSize");
 
                 ftrScanIsFingerPresentDelegate? scanIsFingerPresent = null;
                 ftrScanGetLastErrorDelegate? getLastErrStd = null;
@@ -636,7 +643,21 @@ internal static class Program
                         return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", scanDll = scanDllPathOnly, lastErrorStd = leStd, lastErrorCdecl = leCdecl });
                     }
 
+                    // Primero intentar obtener size/params desde el driver (muchos requieren esta llamada previa).
+                    var pSize = new FTRSCAN_FRAME_PARAMETERS { nWidth = 0, nHeight = 0, nImageSize = 0, nResolution = 0 };
+                    int rSize = -9999;
+                    try
+                    {
+                        if (getImageSize != null) rSize = getImageSize(dev, ref pSize);
+                    }
+                    catch
+                    {
+                        rSize = -9999;
+                    }
+
                     int bufferSize = frameBufSize < 1024 ? 153600 : frameBufSize;
+                    if (pSize.nImageSize > 0 && pSize.nImageSize <= 10_000_000)
+                        bufferSize = Math.Max(bufferSize, pSize.nImageSize);
                     int tries = Math.Max(1, frameTries);
 
                     IntPtr unmanaged = IntPtr.Zero;
@@ -648,13 +669,14 @@ internal static class Program
                         var frames = new List<object>();
                         for (int i = 0; i < tries; i++)
                         {
-                            var p = new FTRSCAN_FRAME_PARAMETERS { nWidth = 0, nHeight = 0, nImageSize = 0, nResolution = 0 };
+                            // Iniciar con los sizes detectados (si están) para evitar paths raros del driver.
+                            var p = pSize;
                             int r;
                             try { r = InvokeGetFrame(dev, unmanaged, ref p); }
                             catch (Exception ex)
                             {
                                 frames.Add(new { i, ok = false, stage = "scanFrame", error = ex.Message, type = ex.GetType().FullName });
-                                PumpDelay(frameWaitMs);
+                                if (useWinForms) PumpDelay(frameWaitMs); else Thread.Sleep(Math.Max(0, frameWaitMs));
                                 continue;
                             }
 
@@ -703,6 +725,7 @@ internal static class Program
                             frames.Add(new
                             {
                                 i,
+                                rSize,
                                 ok = okFrame,
                                 code = r,
                                 width = p.nWidth,
@@ -712,6 +735,7 @@ internal static class Program
                                 scanCallConv,
                                 frameCopy,
                                 bufferSize,
+                                initial = new { width = pSize.nWidth, height = pSize.nHeight, imageSize = pSize.nImageSize, resolution = pSize.nResolution },
                                 diag,
                                 fingerPresent,
                                 lastErrorStd = leStd,
@@ -725,7 +749,7 @@ internal static class Program
                             if (okFrame && (!frameCopy || imageB64 != null))
                                 break;
 
-                            PumpDelay(frameWaitMs);
+                            if (useWinForms) PumpDelay(frameWaitMs); else Thread.Sleep(Math.Max(0, frameWaitMs));
                         }
 
                         return new CliResult(0, new { ok = true, stage = "scanFrame", scanDll = scanDllPathOnly, frames });
@@ -742,7 +766,12 @@ internal static class Program
                         try { close(dev); } catch { }
                     }
                 }
-            }, scanVisible);
+
+            }
+
+            var result = useWinForms
+                ? WinFormsLoop.RunOnUiThread(_hwnd => DoWork(), scanVisible)
+                : DoWork();
 
             JsonOut.Print(result.Payload);
             return result.ExitCode;
