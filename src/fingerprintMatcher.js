@@ -24,6 +24,146 @@ const fallbackScanDllPath = path.join(__dirname, "../lib/ftrScanAPI.dll");
 
 let cachedConsoleHwnd = undefined;
 
+let cachedMessageHwnd = undefined;
+let messagePumpStarted = false;
+
+function ensureMessagePumpAndWindow() {
+  if (cachedMessageHwnd !== undefined) return cachedMessageHwnd;
+  cachedMessageHwnd = null;
+
+  if (process.platform !== "win32") return cachedMessageHwnd;
+  if (!nativeAvailable || !koffi) return cachedMessageHwnd;
+
+  const enabled = String(process.env.FTR_MESSAGE_PUMP || "1").trim() === "1";
+  if (!enabled) return cachedMessageHwnd;
+
+  try {
+    const user32 = koffi.load("user32.dll");
+    const k32 = koffi.load("kernel32.dll");
+
+    const GetModuleHandleA = k32.func(
+      "__stdcall",
+      "GetModuleHandleA",
+      "void *",
+      ["char *"],
+    );
+
+    const CreateWindowExA = user32.func(
+      "__stdcall",
+      "CreateWindowExA",
+      "void *",
+      [
+        "uint32", // dwExStyle
+        "char *", // lpClassName
+        "char *", // lpWindowName
+        "uint32", // dwStyle
+        "int", // X
+        "int", // Y
+        "int", // nWidth
+        "int", // nHeight
+        "void *", // hWndParent
+        "void *", // hMenu
+        "void *", // hInstance
+        "void *", // lpParam
+      ],
+    );
+
+    const MSG = koffi.struct("MSG", {
+      hwnd: "void *",
+      message: "uint32",
+      _pad0: "uint32",
+      wParam: "uint64",
+      lParam: "int64",
+      time: "uint32",
+      _pad1: "uint32",
+      pt_x: "int32",
+      pt_y: "int32",
+    });
+
+    const PeekMessageA = user32.func("__stdcall", "PeekMessageA", "int", [
+      "MSG *",
+      "void *",
+      "uint32",
+      "uint32",
+      "uint32",
+    ]);
+    const TranslateMessage = user32.func(
+      "__stdcall",
+      "TranslateMessage",
+      "int",
+      ["MSG *"],
+    );
+    const DispatchMessageA = user32.func(
+      "__stdcall",
+      "DispatchMessageA",
+      "int64",
+      ["MSG *"],
+    );
+
+    const hInstance = GetModuleHandleA(null);
+
+    // Usamos una clase existente (STATIC) para evitar RegisterClass/WndProc.
+    const hwnd = CreateWindowExA(
+      0,
+      "STATIC",
+      "MarCaribeFutronicMsgWindow",
+      0,
+      0,
+      0,
+      0,
+      0,
+      null,
+      null,
+      hInstance,
+      null,
+    );
+
+    cachedMessageHwnd = hwnd || null;
+
+    if (cachedMessageHwnd && !messagePumpStarted) {
+      messagePumpStarted = true;
+      const pumpIntervalMsRaw = Number(
+        process.env.FTR_MESSAGE_PUMP_INTERVAL_MS || 20,
+      );
+      const pumpIntervalMs =
+        Number.isFinite(pumpIntervalMsRaw) && pumpIntervalMsRaw > 0
+          ? Math.min(pumpIntervalMsRaw, 1000)
+          : 20;
+      const pumpMaxMessagesRaw = Number(
+        process.env.FTR_MESSAGE_PUMP_MAX_MESSAGES || 200,
+      );
+      const pumpMaxMessages =
+        Number.isFinite(pumpMaxMessagesRaw) && pumpMaxMessagesRaw > 0
+          ? Math.min(pumpMaxMessagesRaw, 5000)
+          : 200;
+
+      const PM_REMOVE = 0x0001;
+
+      setInterval(() => {
+        try {
+          // Drenar la cola de mensajes sin bloquear el event-loop.
+          const msg = new MSG();
+          let n = 0;
+          while (
+            n < pumpMaxMessages &&
+            PeekMessageA(msg, null, 0, 0, PM_REMOVE)
+          ) {
+            TranslateMessage(msg);
+            DispatchMessageA(msg);
+            n += 1;
+          }
+        } catch {
+          // ignore
+        }
+      }, pumpIntervalMs).unref?.();
+    }
+  } catch {
+    cachedMessageHwnd = null;
+  }
+
+  return cachedMessageHwnd;
+}
+
 function getConsoleHwnd() {
   if (cachedConsoleHwnd !== undefined) return cachedConsoleHwnd;
   cachedConsoleHwnd = null;
@@ -735,6 +875,7 @@ export async function createTemplateFromDevice(
   const tryHwnd =
     handleMode === "hwnd" ||
     (handleMode === "auto" && process.platform === "win32");
+  const messageHwnd = tryHwnd ? ensureMessagePumpAndWindow() : null;
   const consoleHwnd = tryHwnd ? getConsoleHwnd() : null;
 
   const probeOn201 =
@@ -1083,6 +1224,9 @@ export async function createTemplateFromDevice(
       if (handleMode === "scan" || handleMode === "auto") {
         if (deviceHandle)
           candidates.push({ h: deviceHandle, label: "scanner-handle" });
+      }
+      if (tryHwnd && messageHwnd) {
+        candidates.push({ h: messageHwnd, label: "message-hwnd" });
       }
       if (tryHwnd && consoleHwnd) {
         candidates.push({ h: consoleHwnd, label: "console-hwnd" });
