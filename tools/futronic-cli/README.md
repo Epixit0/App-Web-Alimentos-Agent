@@ -134,6 +134,13 @@ Get-ChildItem -Recurse C:\FutronicSDK -Filter FTRAPI.dll | Select-Object -Expand
 .\dist\futronic-cli.exe enroll --dll $ftr --purpose 3 --nullHwnd 1
 ```
 
+- Abrir dispositivo vía `ftrScanAPI.dll` y usar ese handle (útil si `FTREnroll` falla con `201` usando HWND):
+
+```powershell
+$scan = "C:\FutronicSDK\ftrScanAPI.dll"  # ajusta la ruta real
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --scanDll $scan --handle scan --purpose 3 --method enrollx
+```
+
 Salida (stdout):
 
 - JSON con `ok`, `code`, y si `ok=true`, `templateBase64`.

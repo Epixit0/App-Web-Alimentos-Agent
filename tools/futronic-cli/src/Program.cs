@@ -18,6 +18,9 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern IntPtr LoadLibraryW(string lpFileName);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
     [DllImport("FTRAPI.dll", CallingConvention = CallingConvention.StdCall)]
     public static extern int FTRInitialize();
 
@@ -187,6 +190,7 @@ internal static class Program
         Environment.CurrentDirectory = dllDir;
 
         var noLoadLibrary = Args.GetInt(opt, "noLoadLibrary", 0) != 0;
+        var handleMode = (Args.GetStr(opt, "handle") ?? "hwnd").Trim().ToLowerInvariant();
 
         // Preferimos cargar por ruta completa para evitar que el proceso termine usando otra copia en PATH,
         // pero permitimos desactivar esto para diagnosticar.
@@ -211,6 +215,36 @@ internal static class Program
                         ? "win32=193 suele ser mismatch x86/x64. Publica win-x86 o usa un FTRAPI.dll x64. Puedes probar --noLoadLibrary 1 para fallback."
                         : null
                 });
+                Environment.CurrentDirectory = oldCwd;
+                return 9;
+            }
+        }
+
+        // Opcionalmente cargar ftrScanAPI.dll para obtener un handle de dispositivo.
+        // Esto puede ser necesario en algunos SDK/builds para que Enroll funcione.
+        var scanDllPath = Args.GetStr(opt, "scanDll");
+        IntPtr scanModule = IntPtr.Zero;
+        if (!string.IsNullOrWhiteSpace(scanDllPath))
+        {
+            if (!File.Exists(scanDllPath))
+            {
+                JsonOut.Print(new { ok = false, stage = "args", error = "No existe --scanDll", scanDll = scanDllPath });
+                Environment.CurrentDirectory = oldCwd;
+                return 2;
+            }
+
+            var scanDir = Path.GetDirectoryName(scanDllPath);
+            if (!string.IsNullOrWhiteSpace(scanDir))
+            {
+                // Asegurar dependencias del scan DLL
+                Native.SetDllDirectoryA(scanDir);
+            }
+
+            scanModule = Native.LoadLibraryW(scanDllPath);
+            if (scanModule == IntPtr.Zero)
+            {
+                var err = Marshal.GetLastWin32Error();
+                JsonOut.Print(new { ok = false, stage = "loadLibrary", error = "No se pudo cargar ftrScanAPI.dll", scanDll = scanDllPath, win32 = err });
                 Environment.CurrentDirectory = oldCwd;
                 return 9;
             }
@@ -258,6 +292,53 @@ internal static class Program
                 {
                     var hwnd = useNullHwnd ? IntPtr.Zero : hwndFromUi;
 
+                    // Determinar handle a usar en la API: hwnd (default) o handle de dispositivo.
+                    IntPtr apiHandle = hwnd;
+                    IntPtr scanHandle = IntPtr.Zero;
+                    object? scanInfo = null;
+
+                    if (handleMode == "scan")
+                    {
+                        // Resolver ftrScanOpenDevice/ftrScanCloseDevice desde scanDll (si está) o desde FTRAPI.
+                        var open = TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "ftrScanOpenDevice")
+                                   ?? TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "FTRScanOpenDevice")
+                                   ?? TryGetProc<ftrScanOpenDeviceDelegate>(IntPtr.Zero, "ftrScanOpenDevice")
+                                   ?? TryGetProc<ftrScanOpenDeviceDelegate>(IntPtr.Zero, "FTRScanOpenDevice");
+
+                        var close = TryGetProc<ftrScanCloseDeviceDelegate>(scanModule, "ftrScanCloseDevice")
+                                    ?? TryGetProc<ftrScanCloseDeviceDelegate>(scanModule, "FTRScanCloseDevice")
+                                    ?? TryGetProc<ftrScanCloseDeviceDelegate>(IntPtr.Zero, "ftrScanCloseDevice")
+                                    ?? TryGetProc<ftrScanCloseDeviceDelegate>(IntPtr.Zero, "FTRScanCloseDevice");
+
+                        if (open == null)
+                        {
+                            return new CliResult(14, new { ok = false, stage = "scanOpen", error = "No se encontró ftrScanOpenDevice (usa --scanDll o revisa el SDK)", handleMode });
+                        }
+
+                        scanHandle = open();
+                        scanInfo = new { handleMode, scanHandle = scanHandle.ToInt64(), scanDll = scanDllPath };
+
+                        if (scanHandle == IntPtr.Zero)
+                        {
+                            return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", handleMode, scanDll = scanDllPath });
+                        }
+
+                        apiHandle = scanHandle;
+
+                        // Asegurar cierre al terminar.
+                        if (close != null)
+                        {
+                            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+                            {
+                                try { close(scanHandle); } catch { }
+                            };
+                        }
+                    }
+                    else if (handleMode == "null")
+                    {
+                        apiHandle = IntPtr.Zero;
+                    }
+
                     var setParamResults = new List<object>();
                     foreach (var (id, value) in parsedParams)
                     {
@@ -268,12 +349,12 @@ internal static class Program
                     int capCode = 0;
                     if (doPreCapture)
                     {
-                        capCode = Native.FTRCaptureFrame(hwnd, captureArg2);
+                        capCode = Native.FTRCaptureFrame(apiHandle, captureArg2);
                     }
 
                     if (method == "enroll")
                     {
-                        var rEnroll = Native.FTREnroll(hwnd, purpose, ref data);
+                        var rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
                         if (rEnroll == 0)
                         {
                             var written = (int)data.dwSize;
@@ -287,10 +368,12 @@ internal static class Program
                                     method = "enroll",
                                     purpose,
                                     hwndMode = useNullHwnd ? "null" : "winforms",
+                                    handleMode,
                                     bytes = written,
                                     templateBase64 = tpl,
                                     preCaptureCode = capCode,
-                                    setParams = setParamResults
+                                    setParams = setParamResults,
+                                    scan = scanInfo
                                 });
                             }
 
@@ -302,10 +385,12 @@ internal static class Program
                                 method = "enroll",
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
+                                handleMode,
                                 error = "dwSize inválido",
                                 dwSize = data.dwSize,
                                 preCaptureCode = capCode,
-                                setParams = setParamResults
+                                setParams = setParamResults,
+                                scan = scanInfo
                             });
                         }
 
@@ -317,14 +402,16 @@ internal static class Program
                             method = "enroll",
                             purpose,
                             hwndMode = useNullHwnd ? "null" : "winforms",
+                            handleMode,
                             preCaptureCode = capCode,
-                            setParams = setParamResults
+                            setParams = setParamResults,
+                            scan = scanInfo
                         });
                     }
                     else
                     {
                         int quality;
-                        var r = Native.FTREnrollX(hwnd, purpose, ref data, out quality);
+                        var r = Native.FTREnrollX(apiHandle, purpose, ref data, out quality);
                         if (r == 0)
                         {
                             var written = (int)data.dwSize;
@@ -338,11 +425,13 @@ internal static class Program
                                     method = "enrollx",
                                     purpose,
                                     hwndMode = useNullHwnd ? "null" : "winforms",
+                                    handleMode,
                                     quality,
                                     bytes = written,
                                     templateBase64 = tpl,
                                     preCaptureCode = capCode,
-                                    setParams = setParamResults
+                                    setParams = setParamResults,
+                                    scan = scanInfo
                                 });
                             }
 
@@ -354,11 +443,13 @@ internal static class Program
                                 method = "enrollx",
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
+                                handleMode,
                                 quality,
                                 error = "dwSize inválido",
                                 dwSize = data.dwSize,
                                 preCaptureCode = capCode,
-                                setParams = setParamResults
+                                setParams = setParamResults,
+                                scan = scanInfo
                             });
                         }
 
@@ -370,9 +461,11 @@ internal static class Program
                             method = "enrollx",
                             purpose,
                             hwndMode = useNullHwnd ? "null" : "winforms",
+                            handleMode,
                             quality,
                             preCaptureCode = capCode,
-                            setParams = setParamResults
+                            setParams = setParamResults,
+                            scan = scanInfo
                         });
                     }
                 });
@@ -391,6 +484,23 @@ internal static class Program
             try { Environment.CurrentDirectory = oldCwd; } catch { }
             try { Native.SetDllDirectoryA(null); } catch { }
         }
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate IntPtr ftrScanOpenDeviceDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void ftrScanCloseDeviceDelegate(IntPtr device);
+
+    private static T? TryGetProc<T>(IntPtr module, string name) where T : class
+    {
+        // Si module==0, GetProcAddress no sirve. En nuestro caso, las funciones scan pueden estar en FTRAPI.dll,
+        // pero ya están cargadas en el proceso con el nombre "FTRAPI.dll". No tenemos el handle aquí.
+        // Por eso solo resolvemos si nos pasaron --scanDll.
+        if (module == IntPtr.Zero) return null;
+        var p = Native.GetProcAddress(module, name);
+        if (p == IntPtr.Zero) return null;
+        return Marshal.GetDelegateForFunctionPointer(p, typeof(T)) as T;
     }
 
     private static List<string> CollectMultiArgs(string[] argv, params string[] keys)
