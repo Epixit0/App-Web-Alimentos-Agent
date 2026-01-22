@@ -1351,17 +1351,71 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
     return { matched: false, error: "Template a comparar vacío" };
   }
 
-  const base = { dwSize: baseTemplate.length, pData: baseTemplate };
+  // WorkedEx suele guardar templates en archivos .tml. En algunas instalaciones,
+  // el archivo incluye un contenedor/encabezado (por ejemplo, size-prefix) y NO es
+  // directamente el buffer de template que espera FTRSetBaseTemplate/FTRIdentify.
+  // Sin specs oficiales, aplicamos heurísticas seguras:
+  // - Si los primeros 4 bytes (LE) parecen un tamaño válido, extraemos ese payload.
+  // - Si no, usamos el buffer completo.
+  const debugTpl = String(process.env.FINGERPRINT_AGENT_DEBUG_TEMPLATE || "").trim() === "1";
+
+  function normalizeMaybeTml(buf, label) {
+    try {
+      if (!Buffer.isBuffer(buf) || buf.length < 8) return { buf, note: null };
+
+      const maxReasonable = 1024 * 1024;
+      if (buf.length > maxReasonable) return { buf, note: null };
+
+      const size0 = buf.readUInt32LE(0);
+      const rem0 = buf.length - 4;
+      if (size0 > 0 && size0 <= rem0 && size0 >= 256 && size0 <= 200_000) {
+        const slice = buf.subarray(4, 4 + size0);
+        if (debugTpl) {
+          console.log(
+            `[DEBUG] normalizeTemplate(${label}): sizePrefix@0=${size0} rawLen=${buf.length} -> tplLen=${slice.length}`,
+          );
+        }
+        return { buf: slice, note: "sizePrefix0" };
+      }
+
+      // Alternativa común: 4 bytes reservados + size en offset 4
+      if (buf.length >= 12) {
+        const size4 = buf.readUInt32LE(4);
+        const rem4 = buf.length - 8;
+        if (size4 > 0 && size4 <= rem4 && size4 >= 256 && size4 <= 200_000) {
+          const slice = buf.subarray(8, 8 + size4);
+          if (debugTpl) {
+            console.log(
+              `[DEBUG] normalizeTemplate(${label}): sizePrefix@4=${size4} rawLen=${buf.length} -> tplLen=${slice.length}`,
+            );
+          }
+          return { buf: slice, note: "sizePrefix4" };
+        }
+      }
+
+      return { buf, note: null };
+    } catch {
+      return { buf, note: null };
+    }
+  }
+
+  const normBase = normalizeMaybeTml(baseTemplate, "base");
+  const normProbe = normalizeMaybeTml(probeTemplate, "probe");
+  const baseBuf = normBase.buf;
+  const probeBuf = normProbe.buf;
+
+  const base = { dwSize: baseBuf.length, pData: baseBuf };
   const setResult = cached.FTRSetBaseTemplate(koffi.as(base, "FTR_DATA *"));
   if (setResult !== 0) {
     return {
       matched: false,
       error: `Error en FTRSetBaseTemplate: ${setResult}`,
       code: setResult,
+      details: { baseLen: baseBuf.length, rawBaseLen: baseTemplate.length },
     };
   }
 
-  const probe = { dwSize: probeTemplate.length, pData: probeTemplate };
+  const probe = { dwSize: probeBuf.length, pData: probeBuf };
   // Importante: inicializar en -1 para evitar que 0 (match) sea el valor por defecto
   // si la DLL no llega a escribir el resultado por algún motivo.
   const matchedIndex = [-1];
@@ -1378,6 +1432,13 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
       matched: false,
       error: `Error en FTRIdentify: ${identifyResult}`,
       code: identifyResult,
+      details: {
+        baseLen: baseBuf.length,
+        probeLen: probeBuf.length,
+        rawBaseLen: baseTemplate.length,
+        rawProbeLen: probeTemplate.length,
+        normalized: Boolean(normBase.note || normProbe.note),
+      },
     };
   }
 
