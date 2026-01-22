@@ -297,7 +297,13 @@ internal static class Program
                     IntPtr scanHandle = IntPtr.Zero;
                     object? scanInfo = null;
 
-                    if (handleMode == "scan")
+                    // Modos soportados:
+                    // - hwnd: pasar HWND a FTR*.
+                    // - scan: pasar handle de dispositivo a FTR*.
+                    // - hwnd+scan: abrir dispositivo (scan) pero pasar HWND a FTR*.
+                    var wantsScanOpen = handleMode == "scan" || handleMode == "hwnd+scan" || handleMode == "hwndscan";
+
+                    if (wantsScanOpen)
                     {
                         // Resolver ftrScanOpenDevice/ftrScanCloseDevice desde scanDll (si está) o desde FTRAPI.
                         var open = TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "ftrScanOpenDevice")
@@ -323,15 +329,19 @@ internal static class Program
                             return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", handleMode, scanDll = scanDllPath });
                         }
 
-                        apiHandle = scanHandle;
+                        if (handleMode == "scan")
+                        {
+                            apiHandle = scanHandle;
+                        }
+                        else
+                        {
+                            apiHandle = hwnd; // hwnd+scan
+                        }
 
-                        // Asegurar cierre al terminar.
+                        // Cerrar al terminar el trabajo.
                         if (close != null)
                         {
-                            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-                            {
-                                try { close(scanHandle); } catch { }
-                            };
+                            try { close(scanHandle); } catch { }
                         }
                     }
                     else if (handleMode == "null")
