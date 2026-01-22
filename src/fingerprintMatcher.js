@@ -572,7 +572,7 @@ function loadMatcher() {
         "int",
         "FTR_DATA *",
         "int *",
-      }),
+      ]),
   );
 
   const verify = resolveFunction(
@@ -1375,12 +1375,12 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   const baseBuf = baseTemplate;
   const probeBuf = probeTemplate;
 
-  // --- Nueva ruta: usar FTRVerify si está disponible (preferido para 1-a-1) ---
-  if (cached.FTRVerify) {
-    const base = { dwSize: baseBuf.length, pData: baseBuf };
-    const probe = { dwSize: probeBuf.length, pData: probeBuf };
-    const score = [0];
+  const base = { dwSize: baseBuf.length, pData: baseBuf };
+  const probe = { dwSize: probeBuf.length, pData: probeBuf };
 
+  // --- Ruta 1: usar FTRVerify si está disponible (preferido para 1-a-1) ---
+  if (cached.FTRVerify) {
+    const score = [0];
     const verifyResult = cached.FTRVerify(
       koffi.as(probe, "FTR_DATA *"),
       koffi.as(base, "FTR_DATA *"),
@@ -1389,9 +1389,6 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
 
     if (verifyResult === 0) {
       const sc = score[0];
-      // FTRVerify no devuelve "matched", solo un score.
-      // Usamos un umbral para decidir si es match. El default del SDK suele ser bajo.
-      // Un valor como 100 es un punto de partida razonable. Se puede ajustar.
       const scoreThresholdRaw = Number(
         process.env.FTR_VERIFY_SCORE_THRESHOLD || 100,
       );
@@ -1403,36 +1400,31 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
       return { matched, score: sc, used: "FTRVerify" };
     }
   }
-  // --- Fin nueva ruta ---
+  // --- Fin Ruta 1 ---
 
-  const base = { dwSize: baseBuf.length, pData: baseBuf };
+  // --- Ruta 2 (Fallback): usar FTRIdentify ---
   const setResult = cached.FTRSetBaseTemplate(koffi.as(base, "FTR_DATA *"));
   if (setResult !== 0) {
     return {
       matched: false,
       error: `Error en FTRSetBaseTemplate: ${setResult}`,
       code: setResult,
-      details: { baseLen: baseBuf.length, rawBaseLen: baseTemplate.length },
+      details: { baseLen: baseBuf.length },
     };
   }
 
-  const probe = { dwSize: probeBuf.length, pData: probeBuf };
-  // Importante: inicializar en 1 para indicar que hay 1 template base.
-  // La DLL usa esto como IN/OUT param: IN=num_templates, OUT=match_index.
   const matchedIndex = [1];
   const score = [0];
-
   const identifyResult = cached.FTRIdentify(
     koffi.as(probe, "FTR_DATA *"),
     matchedIndex,
     score,
   );
 
-  // Algunas builds del SDK funcionan mejor con FTRIdentifyN.
-  // Si Identify falla y tenemos IdentifyN, reintentamos ahí.
   let identifyNResult = null;
+  // Si Identify falla y tenemos IdentifyN, reintentamos ahí.
   if (identifyResult !== 0 && typeof cached.FTRIdentifyN === "function") {
-    const matchedIndexN = [-1];
+    const matchedIndexN = [1]; // Corregido de [-1]
     const scoreN = [0];
     identifyNResult = cached.FTRIdentifyN(
       koffi.as(probe, "FTR_DATA *"),
@@ -1440,6 +1432,7 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
       scoreN,
     );
     if (identifyNResult === 0) {
+      // Si IdentifyN funciona, usamos su resultado
       matchedIndex[0] = matchedIndexN[0];
       score[0] = scoreN[0];
     }
@@ -1461,18 +1454,12 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
         identifyNResult,
         baseLen: baseBuf.length,
         probeLen: probeBuf.length,
-        rawBaseLen: baseTemplate.length,
-        rawProbeLen: probeTemplate.length,
-        normalized: false,
       },
     };
   }
 
   const idx = matchedIndex[0];
   const sc = score[0];
-
-  // Semántica esperada (según implementación previa): index 0 => coincide con base.
-  // Algunas builds podrían usar índice 1-based cuando solo hay un template.
   const matched = idx === 0 || idx === 1;
 
   return { matched, score: sc, index: idx };
