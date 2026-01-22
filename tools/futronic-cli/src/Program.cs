@@ -18,6 +18,9 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern IntPtr LoadLibraryW(string lpFileName);
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandleW(string lpModuleName);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
 
@@ -195,10 +198,11 @@ internal static class Program
         // Preferimos cargar por ruta completa para evitar que el proceso termine usando otra copia en PATH,
         // pero permitimos desactivar esto para diagnosticar.
         Native.SetDllDirectoryA(dllDir);
+        IntPtr ftrModule = IntPtr.Zero;
         if (!noLoadLibrary)
         {
-            var hMod = Native.LoadLibraryW(dllPath);
-            if (hMod == IntPtr.Zero)
+            ftrModule = Native.LoadLibraryW(dllPath);
+            if (ftrModule == IntPtr.Zero)
             {
                 var err = Marshal.GetLastWin32Error();
                 JsonOut.Print(new
@@ -218,6 +222,11 @@ internal static class Program
                 Environment.CurrentDirectory = oldCwd;
                 return 9;
             }
+        }
+        else
+        {
+            // Intentar obtener el módulo ya cargado (si el loader lo resolvió por PATH).
+            ftrModule = Native.GetModuleHandleW("FTRAPI.dll");
         }
 
         // Opcionalmente cargar ftrScanAPI.dll para obtener un handle de dispositivo.
@@ -250,10 +259,38 @@ internal static class Program
             }
         }
 
-        var init = Native.FTRInitialize();
+        // Opcionalmente usar API MT* si el SDK lo requiere.
+        var api = (Args.GetStr(opt, "api") ?? "auto").Trim().ToLowerInvariant();
+
+        var mtInit = TryGetProc<InitDelegate>(ftrModule, "MTInitialize");
+        var mtTerm = TryGetProc<TerminateDelegate>(ftrModule, "MTTerminate");
+        var mtEnrollX = TryGetProc<EnrollXDelegate>(ftrModule, "MTEnrollX");
+        var mtEnroll = TryGetProc<EnrollDelegate>(ftrModule, "MTEnroll");
+        var mtCapture = TryGetProc<CaptureDelegate>(ftrModule, "MTCaptureFrame");
+
+        var hasMt = mtInit != null && mtTerm != null && (mtEnrollX != null || mtEnroll != null);
+
+        int init;
+        string apiInitUsed;
+        if (api == "mt")
+        {
+            if (!hasMt)
+            {
+                JsonOut.Print(new { ok = false, stage = "init", error = "Se pidió --api mt pero no hay exports MT*", hasMt });
+                Environment.CurrentDirectory = oldCwd;
+                return 10;
+            }
+            init = mtInit!();
+            apiInitUsed = "mt";
+        }
+        else
+        {
+            init = Native.FTRInitialize();
+            apiInitUsed = "ftr";
+        }
         if (init != 0)
         {
-            JsonOut.Print(new { ok = false, stage = "init", code = init, is64Process = Environment.Is64BitProcess, is64OS = Environment.Is64BitOperatingSystem });
+            JsonOut.Print(new { ok = false, stage = "init", code = init, api = apiInitUsed, hasMt, is64Process = Environment.Is64BitProcess, is64OS = Environment.Is64BitOperatingSystem });
             Environment.CurrentDirectory = oldCwd;
             return 10;
         }
@@ -359,12 +396,48 @@ internal static class Program
                     int capCode = 0;
                     if (doPreCapture)
                     {
-                        capCode = Native.FTRCaptureFrame(apiHandle, captureArg2);
+                        if (api == "mt" && mtCapture != null)
+                        {
+                            capCode = mtCapture(apiHandle, captureArg2);
+                        }
+                        else
+                        {
+                            capCode = Native.FTRCaptureFrame(apiHandle, captureArg2);
+                        }
                     }
+
+                    int? capCodeMt = null;
+                    if (api == "auto" && capCode == 201 && mtCapture != null)
+                    {
+                        capCodeMt = mtCapture(apiHandle, captureArg2);
+                    }
+
+                    string apiUsed = api == "mt" ? "mt" : "ftr";
+                    bool fallbackAttempted = false;
+                    int? fallbackCode = null;
 
                     if (method == "enroll")
                     {
-                        var rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
+                        int rEnroll;
+                        if (api == "mt" && mtEnroll != null)
+                        {
+                            rEnroll = mtEnroll(apiHandle, purpose, ref data);
+                            apiUsed = "mt";
+                        }
+                        else
+                        {
+                            rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
+                            apiUsed = "ftr";
+                        }
+
+                        // Fallback: si FTR devuelve 201 y tenemos MT disponible, intentar MT.
+                        if (api == "auto" && rEnroll == 201 && mtEnroll != null)
+                        {
+                            fallbackAttempted = true;
+                            fallbackCode = mtEnroll(apiHandle, purpose, ref data);
+                            rEnroll = fallbackCode.Value;
+                            apiUsed = "mt";
+                        }
                         if (rEnroll == 0)
                         {
                             var written = (int)data.dwSize;
@@ -379,9 +452,13 @@ internal static class Program
                                     purpose,
                                     hwndMode = useNullHwnd ? "null" : "winforms",
                                     handleMode,
+                                    api = apiUsed,
+                                    fallbackAttempted,
+                                    fallbackCode,
                                     bytes = written,
                                     templateBase64 = tpl,
                                     preCaptureCode = capCode,
+                                    preCaptureCodeMt = capCodeMt,
                                     setParams = setParamResults,
                                     scan = scanInfo
                                 });
@@ -396,9 +473,13 @@ internal static class Program
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
                                 handleMode,
+                                api = apiUsed,
+                                fallbackAttempted,
+                                fallbackCode,
                                 error = "dwSize inválido",
                                 dwSize = data.dwSize,
                                 preCaptureCode = capCode,
+                                preCaptureCodeMt = capCodeMt,
                                 setParams = setParamResults,
                                 scan = scanInfo
                             });
@@ -413,7 +494,11 @@ internal static class Program
                             purpose,
                             hwndMode = useNullHwnd ? "null" : "winforms",
                             handleMode,
+                            api = apiUsed,
+                            fallbackAttempted,
+                            fallbackCode,
                             preCaptureCode = capCode,
+                            preCaptureCodeMt = capCodeMt,
                             setParams = setParamResults,
                             scan = scanInfo
                         });
@@ -421,7 +506,25 @@ internal static class Program
                     else
                     {
                         int quality;
-                        var r = Native.FTREnrollX(apiHandle, purpose, ref data, out quality);
+                        int r;
+                        if (api == "mt" && mtEnrollX != null)
+                        {
+                            r = mtEnrollX(apiHandle, purpose, ref data, out quality);
+                            apiUsed = "mt";
+                        }
+                        else
+                        {
+                            r = Native.FTREnrollX(apiHandle, purpose, ref data, out quality);
+                            apiUsed = "ftr";
+                        }
+
+                        if (api == "auto" && r == 201 && mtEnrollX != null)
+                        {
+                            fallbackAttempted = true;
+                            fallbackCode = mtEnrollX(apiHandle, purpose, ref data, out quality);
+                            r = fallbackCode.Value;
+                            apiUsed = "mt";
+                        }
                         if (r == 0)
                         {
                             var written = (int)data.dwSize;
@@ -436,10 +539,14 @@ internal static class Program
                                     purpose,
                                     hwndMode = useNullHwnd ? "null" : "winforms",
                                     handleMode,
+                                    api = apiUsed,
+                                    fallbackAttempted,
+                                    fallbackCode,
                                     quality,
                                     bytes = written,
                                     templateBase64 = tpl,
                                     preCaptureCode = capCode,
+                                    preCaptureCodeMt = capCodeMt,
                                     setParams = setParamResults,
                                     scan = scanInfo
                                 });
@@ -454,10 +561,14 @@ internal static class Program
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
                                 handleMode,
+                                api = apiUsed,
+                                fallbackAttempted,
+                                fallbackCode,
                                 quality,
                                 error = "dwSize inválido",
                                 dwSize = data.dwSize,
                                 preCaptureCode = capCode,
+                                preCaptureCodeMt = capCodeMt,
                                 setParams = setParamResults,
                                 scan = scanInfo
                             });
@@ -472,8 +583,12 @@ internal static class Program
                             purpose,
                             hwndMode = useNullHwnd ? "null" : "winforms",
                             handleMode,
+                            api = apiUsed,
+                            fallbackAttempted,
+                            fallbackCode,
                             quality,
                             preCaptureCode = capCode,
+                            preCaptureCodeMt = capCodeMt,
                             setParams = setParamResults,
                             scan = scanInfo
                         });
@@ -490,11 +605,31 @@ internal static class Program
         }
         finally
         {
-            try { Native.FTRTerminate(); } catch { }
+            try
+            {
+                if (api == "mt" && mtTerm != null) mtTerm();
+                else Native.FTRTerminate();
+            }
+            catch { }
             try { Environment.CurrentDirectory = oldCwd; } catch { }
             try { Native.SetDllDirectoryA(null); } catch { }
         }
     }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int InitDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void TerminateDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int CaptureDelegate(IntPtr handle, int arg2);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int EnrollXDelegate(IntPtr handle, int purpose, ref Native.FTR_DATA outTemplate, out int quality);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int EnrollDelegate(IntPtr handle, int purpose, ref Native.FTR_DATA outTemplate);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate IntPtr ftrScanOpenDeviceDelegate();
@@ -504,9 +639,6 @@ internal static class Program
 
     private static T? TryGetProc<T>(IntPtr module, string name) where T : class
     {
-        // Si module==0, GetProcAddress no sirve. En nuestro caso, las funciones scan pueden estar en FTRAPI.dll,
-        // pero ya están cargadas en el proceso con el nombre "FTRAPI.dll". No tenemos el handle aquí.
-        // Por eso solo resolvemos si nos pasaron --scanDll.
         if (module == IntPtr.Zero) return null;
         var p = Native.GetProcAddress(module, name);
         if (p == IntPtr.Zero) return null;

@@ -109,6 +109,19 @@ Get-ChildItem -Recurse C:\FutronicSDK -Filter FTRAPI.dll | Select-Object -Expand
 
 ## Opciones útiles (debug)
 
+- Elegir API (algunos SDKs traen también `MT*` y el demo usa ese motor):
+
+```powershell
+# auto = intenta FTR* y si devuelve 201 prueba MT* (si existe)
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api auto
+
+# forzar MT*
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api mt
+
+# forzar FTR*
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --api ftr
+```
+
 - Elegir método:
 
 ```powershell
