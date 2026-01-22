@@ -333,22 +333,22 @@ internal static class Program
                 try { Environment.CurrentDirectory = scanDir; } catch { }
             }
 
-            IntPtr scanModule = Native.LoadLibraryW(scanDllPathOnly);
-            if (scanModule == IntPtr.Zero)
+            IntPtr scanModuleOnly = Native.LoadLibraryW(scanDllPathOnly);
+            if (scanModuleOnly == IntPtr.Zero)
             {
                 var err = Marshal.GetLastWin32Error();
                 JsonOut.Print(new { ok = false, stage = "loadLibrary", error = "No se pudo cargar ftrScanAPI.dll", scanDll = scanDllPathOnly, win32 = err, is64Process = Environment.Is64BitProcess });
                 return 9;
             }
 
-            var open = TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "ftrScanOpenDevice")
-                       ?? TryGetProc<ftrScanOpenDeviceDelegate>(scanModule, "FTRScanOpenDevice");
-            var close = TryGetProc<ftrScanCloseDeviceDelegate>(scanModule, "ftrScanCloseDevice")
-                        ?? TryGetProc<ftrScanCloseDeviceDelegate>(scanModule, "FTRScanCloseDevice");
+            var open = TryGetProc<ftrScanOpenDeviceDelegate>(scanModuleOnly, "ftrScanOpenDevice")
+                       ?? TryGetProc<ftrScanOpenDeviceDelegate>(scanModuleOnly, "FTRScanOpenDevice");
+            var close = TryGetProc<ftrScanCloseDeviceDelegate>(scanModuleOnly, "ftrScanCloseDevice")
+                        ?? TryGetProc<ftrScanCloseDeviceDelegate>(scanModuleOnly, "FTRScanCloseDevice");
 
-            var getImageSize = TryGetProc<ftrScanGetImageSizeDelegate>(scanModule, "ftrScanGetImageSize");
-            var getImage2 = TryGetProc<ftrScanGetImage2Delegate>(scanModule, "ftrScanGetImage2");
-            var getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModule, "ftrScanGetLastError");
+            var getImageSize = TryGetProc<ftrScanGetImageSizeDelegate>(scanModuleOnly, "ftrScanGetImageSize");
+            var getImage2 = TryGetProc<ftrScanGetImage2Delegate>(scanModuleOnly, "ftrScanGetImage2");
+            var getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModuleOnly, "ftrScanGetLastError");
 
             if (open == null || close == null)
             {
