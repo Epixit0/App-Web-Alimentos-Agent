@@ -435,7 +435,7 @@ internal static class Program
 
         try
         {
-            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe")
+            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe" && cmd != "scanframe")
             {
                 JsonOut.Print(new { ok = false, error = $"Comando no soportado: {cmd}" });
                 return 2;
@@ -454,6 +454,12 @@ internal static class Program
             var captureLoopDelayMs = Args.GetInt(opt, "captureLoopDelayMs", 150);
             var captureArg2Mode = (Args.GetStr(opt, "captureArg2Mode") ?? "purpose").Trim().ToLowerInvariant();
             var captureRequireOk = Args.GetInt(opt, "captureRequireOk", 0) != 0;
+
+            // scanframe: captura de imagen cruda usando ftrScanGetFrame
+            // Defaults típicos: 320x480x1 = 153600 bytes
+            var frameBufSize = Args.GetInt(opt, "frameBuf", 153600);
+            var frameTries = Args.GetInt(opt, "frameTries", 10);
+            var frameWaitMs = Args.GetInt(opt, "frameWaitMs", 150);
 
             var probeCapture = Args.GetInt(opt, "probeCapture", 0) != 0;
             var probeKeep = Args.GetInt(opt, "probeKeep", 0) != 0;
@@ -565,6 +571,99 @@ internal static class Program
                         if (scanHandle == IntPtr.Zero)
                         {
                             return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", handleMode, scanDll = scanDllPath });
+                        }
+
+                        // Comando scanframe: prueba determinista de que el scan API entrega imágenes.
+                        // Esto NO depende de FTRCaptureFrame ni de MT*.
+                        if (cmd == "scanframe")
+                        {
+                            var getFrame = TryGetProc<ftrScanGetFrameDelegate>(scanModule, "ftrScanGetFrame")
+                                           ?? TryGetProc<ftrScanGetFrameDelegate>(scanModule, "FTRScanGetFrame")
+                                           ?? TryGetProc<ftrScanGetFrameDelegate>(IntPtr.Zero, "ftrScanGetFrame")
+                                           ?? TryGetProc<ftrScanGetFrameDelegate>(IntPtr.Zero, "FTRScanGetFrame");
+
+                            if (getFrame == null)
+                            {
+                                return new CliResult(14, new { ok = false, stage = "scanFrame", error = "No se encontró ftrScanGetFrame (revisa tu SDK/driver)", scan = scanInfo });
+                            }
+
+                            var bufferSize = frameBufSize;
+                            if (bufferSize < 1024) bufferSize = 153600;
+                            if (frameTries < 1) frameTries = 1;
+
+                            IntPtr unmanaged = IntPtr.Zero;
+                            try
+                            {
+                                unmanaged = Marshal.AllocHGlobal(bufferSize);
+                                // Best-effort: limpiar buffer
+                                for (int i = 0; i < Math.Min(bufferSize, 4096); i++) Marshal.WriteByte(unmanaged, i, 0);
+
+                                var frames = new List<object>();
+                                for (int i = 0; i < frameTries; i++)
+                                {
+                                    var p = new FTRSCAN_FRAME_PARAMETERS
+                                    {
+                                        nWidth = 0,
+                                        nHeight = 0,
+                                        nImageSize = 0,
+                                        nResolution = 0
+                                    };
+
+                                    int r;
+                                    try
+                                    {
+                                        r = getFrame(scanHandle, unmanaged, ref p);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        frames.Add(new { i, ok = false, stage = "scanFrame", error = ex.Message, type = ex.GetType().FullName });
+                                        PumpDelay(frameWaitMs);
+                                        continue;
+                                    }
+
+                                    // Interpretación: r != 0 suele ser TRUE
+                                    var okFrame = r != 0;
+
+                                    string? imageB64 = null;
+                                    int copySize = 0;
+                                    if (okFrame)
+                                    {
+                                        // Usar nImageSize si viene, sino el buffer total.
+                                        copySize = p.nImageSize > 0 ? Math.Min(p.nImageSize, bufferSize) : bufferSize;
+                                        if (copySize > 0 && copySize <= bufferSize)
+                                        {
+                                            var managed = new byte[copySize];
+                                            Marshal.Copy(unmanaged, managed, 0, copySize);
+                                            imageB64 = Convert.ToBase64String(managed);
+                                        }
+                                    }
+
+                                    frames.Add(new
+                                    {
+                                        i,
+                                        ok = okFrame,
+                                        code = r,
+                                        width = p.nWidth,
+                                        height = p.nHeight,
+                                        imageSize = p.nImageSize,
+                                        resolution = p.nResolution,
+                                        copied = copySize,
+                                        imageB64
+                                    });
+
+                                    // Si ya obtuvimos un frame con datos, salir.
+                                    if (okFrame && imageB64 != null)
+                                        break;
+
+                                    PumpDelay(frameWaitMs);
+                                }
+
+                                return new CliResult(0, new { ok = true, stage = "scanFrame", scan = scanInfo, frames });
+                            }
+                            finally
+                            {
+                                if (unmanaged != IntPtr.Zero) Marshal.FreeHGlobal(unmanaged);
+                            }
                         }
 
                         // Comando mtinit: solo intenta MTInitialize con un arg específico.
@@ -1328,6 +1427,18 @@ internal static class Program
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int ftrScanIsFingerPresentDelegate(IntPtr device, out int present);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FTRSCAN_FRAME_PARAMETERS
+    {
+        public int nWidth;
+        public int nHeight;
+        public int nImageSize;
+        public int nResolution;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ftrScanGetFrameDelegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int ftrScanGetLastErrorDelegate();
