@@ -242,6 +242,39 @@ function loadMatcher() {
       loadedLib.func("__stdcall", name, "int", ["void *", "int"]),
   );
 
+  const setParam = resolveFunction(
+    lib,
+    "FTRSetParam",
+    [
+      "FTRSetParam",
+      "FTR_SetParam",
+      "FTRSetParamA",
+      "FTR_SetParamA",
+      "_FTRSetParam@8",
+      "FTRSetParam@8",
+      "_FTR_SetParam@8",
+      "FTR_SetParam@8",
+    ],
+    (loadedLib, name) => loadedLib.func("__stdcall", name, "int", ["int", "int"]),
+  );
+
+  const getParam = resolveFunction(
+    lib,
+    "FTRGetParam",
+    [
+      "FTRGetParam",
+      "FTR_GetParam",
+      "FTRGetParamA",
+      "FTR_GetParamA",
+      "_FTRGetParam@8",
+      "FTRGetParam@8",
+      "_FTR_GetParam@8",
+      "FTR_GetParam@8",
+    ],
+    (loadedLib, name) =>
+      loadedLib.func("__stdcall", name, "int", ["int", "int *"]),
+  );
+
   // Algunos SDKs exportan también las funciones de escaneo dentro de FTRAPI.dll.
   // Esto nos permite abrir un handle compatible con FTREnroll en caso de que el handle
   // proveniente de ftrScanAPI.dll no sea aceptado por FTREnroll.
@@ -391,6 +424,8 @@ function loadMatcher() {
     FTR_DATA,
     FTRInitialize: initialize?.fn || null,
     FTRTerminate: terminate?.fn || null,
+    FTRSetParam: setParam?.fn || null,
+    FTRGetParam: getParam?.fn || null,
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
     FTRCaptureFrame: captureFrame?.fn || null,
@@ -402,6 +437,8 @@ function loadMatcher() {
     names: {
       FTRInitialize: initialize?.name || null,
       FTRTerminate: terminate?.name || null,
+      FTRSetParam: setParam?.name || null,
+      FTRGetParam: getParam?.name || null,
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
       FTRCaptureFrame: captureFrame?.name || null,
@@ -504,6 +541,98 @@ export async function createTemplateFromDevice(
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+  function normalizeSetParams(raw) {
+    if (!raw || typeof raw !== "string") return [];
+    const parsed = safeJsonParse(raw);
+    if (!parsed) return [];
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((x) => ({
+          id: Number(x?.id),
+          value: Number(x?.value),
+        }))
+        .filter((x) => Number.isFinite(x.id) && Number.isFinite(x.value));
+    }
+    if (parsed && typeof parsed === "object") {
+      return Object.entries(parsed)
+        .map(([k, v]) => ({ id: Number(k), value: Number(v) }))
+        .filter((x) => Number.isFinite(x.id) && Number.isFinite(x.value));
+    }
+    return [];
+  }
+
+  function applyParamsOnce() {
+    const getRaw = process.env.FTR_GET_PARAMS_JSON;
+    const getIds = (() => {
+      if (!getRaw || typeof getRaw !== "string") return [];
+      const parsed = safeJsonParse(getRaw);
+      if (!parsed) return [];
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n));
+      }
+      if (parsed && typeof parsed === "object") {
+        return Object.keys(parsed)
+          .map((k) => Number(k))
+          .filter((n) => Number.isFinite(n));
+      }
+      return [];
+    })();
+
+    if (getIds.length && cached?.FTRGetParam) {
+      for (const id of getIds) {
+        try {
+          const out = [0];
+          const r = cached.FTRGetParam(id, out);
+          if (debug) {
+            console.log(`[DEBUG] FTRGetParam(${id}) result=${r} value=${out[0]}`);
+          }
+        } catch (e) {
+          if (debug) {
+            console.log(
+              `[DEBUG] FTRGetParam(${id}) lanzó error: ${e?.message || String(e)}`,
+            );
+          }
+        }
+      }
+    } else if (getIds.length && debug) {
+      console.log(
+        "[DEBUG] FTR_GET_PARAMS_JSON provisto pero FTRGetParam no está disponible en la DLL",
+      );
+    }
+
+    const raw = process.env.FTR_SET_PARAMS_JSON;
+    const params = normalizeSetParams(raw);
+    if (!params.length) return;
+    if (!cached?.FTRSetParam) {
+      if (debug) {
+        console.log(
+          "[DEBUG] FTR_SET_PARAMS_JSON provisto pero FTRSetParam no está disponible en la DLL",
+        );
+      }
+      return;
+    }
+    for (const { id, value } of params) {
+      try {
+        const r = cached.FTRSetParam(id, value);
+        if (debug) {
+          console.log(`[DEBUG] FTRSetParam(${id}, ${value}) result=${r}`);
+        }
+      } catch (e) {
+        if (debug) {
+          console.log(
+            `[DEBUG] FTRSetParam(${id}, ${value}) lanzó error: ${e?.message || String(e)}`,
+          );
+        }
+      }
+    }
+  }
+
+  // Imitar WorkedEx: suele setear parámetros antes de capturar/enrolar.
+  // Permitimos configurar esos params desde config.json.env sin tocar código.
+  applyParamsOnce();
 
   let lastResult = null;
   let lastDwSize = null;
