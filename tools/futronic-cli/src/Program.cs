@@ -435,10 +435,36 @@ internal static class Program
 
         try
         {
-            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe" && cmd != "scanframe")
+            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe" && cmd != "scanframe" && cmd != "peexports")
             {
                 JsonOut.Print(new { ok = false, error = $"Comando no soportado: {cmd}" });
                 return 2;
+            }
+
+            // Comando peexports: no requiere cargar DLLs ni inicializar SDK.
+            if (cmd == "peexports")
+            {
+                var pePath = Args.GetStr(opt, "pe") ?? dllPath;
+                var filter = Args.GetStr(opt, "filter");
+                var max = Args.GetInt(opt, "max", 2000);
+
+                if (string.IsNullOrWhiteSpace(pePath) || !File.Exists(pePath))
+                {
+                    JsonOut.Print(new { ok = false, stage = "peexports", error = "No existe --pe", pe = pePath });
+                    return 2;
+                }
+
+                try
+                {
+                    var info = PeExports.Read(pePath, filter, max);
+                    JsonOut.Print(new { ok = true, stage = "peexports", pe = pePath, arch = info.Arch, exports = info.Exports });
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    JsonOut.Print(new { ok = false, stage = "peexports", pe = pePath, error = ex.Message, type = ex.GetType().FullName });
+                    return 13;
+                }
             }
 
             var purpose = Args.GetInt(opt, "purpose", 3);
@@ -1560,6 +1586,172 @@ internal static class Program
         List<int> Captures,
         Dictionary<int, int> SetCodes
     );
+
+    private static class PeExports
+    {
+        public sealed record ExportInfo(string Name, uint Rva, int? StdcallArgBytes);
+        public sealed record PeInfo(string Arch, List<ExportInfo> Exports);
+
+        public static PeInfo Read(string path, string? filter, int maxExports)
+        {
+            var buf = File.ReadAllBytes(path);
+            if (buf.Length < 0x100) throw new InvalidOperationException("Archivo demasiado pequeño para ser PE");
+            if (buf[0] != (byte)'M' || buf[1] != (byte)'Z') throw new InvalidOperationException("No es PE (sin MZ)");
+
+            uint e_lfanew = ReadU32(buf, 0x3c);
+            if (e_lfanew + 4 > buf.Length) throw new InvalidOperationException("PE offset fuera de rango");
+            if (buf[e_lfanew] != (byte)'P' || buf[e_lfanew + 1] != (byte)'E' || buf[e_lfanew + 2] != 0 || buf[e_lfanew + 3] != 0)
+                throw new InvalidOperationException("No es PE (sin firma PE\\0\\0)");
+
+            ushort sizeOfOptionalHeader = ReadU16(buf, (int)e_lfanew + 20);
+            int optOff = (int)e_lfanew + 24;
+            ushort magic = ReadU16(buf, optOff);
+            string arch = magic == 0x10b ? "x86" : magic == 0x20b ? "x64" : "unknown";
+
+            int dataDirBase = magic == 0x10b ? optOff + 96 : optOff + 112;
+            uint exportRva = ReadU32(buf, dataDirBase + 0);
+            if (exportRva == 0)
+                return new PeInfo(arch, new List<ExportInfo>());
+
+            int peOffset = (int)e_lfanew;
+            int? exportDirOff = RvaToFileOffset(buf, peOffset, exportRva);
+            if (exportDirOff == null) throw new InvalidOperationException("No se pudo mapear export directory RVA");
+
+            uint numberOfFunctions = ReadU32(buf, exportDirOff.Value + 20);
+            uint numberOfNames = ReadU32(buf, exportDirOff.Value + 24);
+            uint addressOfFunctionsRva = ReadU32(buf, exportDirOff.Value + 28);
+            uint addressOfNamesRva = ReadU32(buf, exportDirOff.Value + 32);
+            uint addressOfNameOrdinalsRva = ReadU32(buf, exportDirOff.Value + 36);
+
+            int? namesOff = RvaToFileOffset(buf, peOffset, addressOfNamesRva);
+            int? ordOff = RvaToFileOffset(buf, peOffset, addressOfNameOrdinalsRva);
+            int? funcsOff = RvaToFileOffset(buf, peOffset, addressOfFunctionsRva);
+            if (namesOff == null || ordOff == null || funcsOff == null)
+                throw new InvalidOperationException("Export directory incompleto (tables)");
+
+            // Build sorted unique function RVAs (to approximate end ranges)
+            var allFuncRvas = new List<uint>();
+            for (int i = 0; i < numberOfFunctions; i++)
+            {
+                var rva = ReadU32(buf, funcsOff.Value + i * 4);
+                if (rva > 0) allFuncRvas.Add(rva);
+            }
+            allFuncRvas.Sort();
+            var unique = new List<uint>();
+            foreach (var rva in allFuncRvas)
+            {
+                if (unique.Count == 0 || unique[^1] != rva) unique.Add(rva);
+            }
+
+            var exports = new List<ExportInfo>();
+            int count = (int)Math.Min(numberOfNames, (uint)Math.Max(0, maxExports));
+            for (int i = 0; i < count; i++)
+            {
+                uint nameRva = ReadU32(buf, namesOff.Value + i * 4);
+                int? nameOff = RvaToFileOffset(buf, peOffset, nameRva);
+                if (nameOff == null) continue;
+                string? name = ReadCString(buf, nameOff.Value);
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (!string.IsNullOrWhiteSpace(filter) && !name.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                ushort ordIndex = ReadU16(buf, ordOff.Value + i * 2);
+                if (ordIndex >= numberOfFunctions) continue;
+                uint funcRva = ReadU32(buf, funcsOff.Value + ordIndex * 4);
+                if (funcRva == 0) continue;
+
+                int? funcOff = RvaToFileOffset(buf, peOffset, funcRva);
+                int? nextOff = null;
+                uint? nextRva = null;
+                foreach (var candidate in unique)
+                {
+                    if (candidate > funcRva)
+                    {
+                        nextRva = candidate;
+                        break;
+                    }
+                }
+                if (nextRva.HasValue) nextOff = RvaToFileOffset(buf, peOffset, nextRva.Value);
+
+                int? rangeEnd = null;
+                if (funcOff != null)
+                {
+                    if (nextOff != null && nextOff > funcOff) rangeEnd = nextOff;
+                    else rangeEnd = Math.Min(buf.Length, funcOff.Value + 4096);
+                }
+
+                int? stdcallBytes = null;
+                if (arch == "x86" && funcOff != null && rangeEnd != null)
+                {
+                    stdcallBytes = GuessStdcallArgBytesInRange(buf, funcOff.Value, rangeEnd.Value);
+                }
+
+                exports.Add(new ExportInfo(name, funcRva, stdcallBytes));
+            }
+
+            return new PeInfo(arch, exports);
+        }
+
+        private static ushort ReadU16(byte[] buf, int off)
+        {
+            if (off < 0 || off + 2 > buf.Length) return 0;
+            return BitConverter.ToUInt16(buf, off);
+        }
+
+        private static uint ReadU32(byte[] buf, int off)
+        {
+            if (off < 0 || off + 4 > buf.Length) return 0;
+            return BitConverter.ToUInt32(buf, off);
+        }
+
+        private static string? ReadCString(byte[] buf, int off)
+        {
+            int end = off;
+            while (end < buf.Length && buf[end] != 0) end++;
+            if (end >= buf.Length) return null;
+            return System.Text.Encoding.ASCII.GetString(buf, off, end - off);
+        }
+
+        private static int? RvaToFileOffset(byte[] buf, int peOffset, uint rva)
+        {
+            ushort numberOfSections = ReadU16(buf, peOffset + 6);
+            ushort sizeOfOptionalHeader = ReadU16(buf, peOffset + 20);
+            int sectionTable = peOffset + 24 + sizeOfOptionalHeader;
+            for (int i = 0; i < numberOfSections; i++)
+            {
+                int secOff = sectionTable + i * 40;
+                uint virtualSize = ReadU32(buf, secOff + 8);
+                uint virtualAddress = ReadU32(buf, secOff + 12);
+                uint sizeOfRawData = ReadU32(buf, secOff + 16);
+                uint pointerToRawData = ReadU32(buf, secOff + 20);
+                uint maxSize = Math.Max(virtualSize, sizeOfRawData);
+                if (rva >= virtualAddress && rva < virtualAddress + maxSize)
+                {
+                    return checked((int)(pointerToRawData + (rva - virtualAddress)));
+                }
+            }
+            return null;
+        }
+
+        private static int? GuessStdcallArgBytesInRange(byte[] buf, int startOff, int endOff)
+        {
+            if (startOff < 0 || startOff >= buf.Length) return null;
+            int end = Math.Min(buf.Length, Math.Max(startOff, endOff));
+            int? last = null;
+            for (int i = startOff; i + 2 < end; i++)
+            {
+                if (buf[i] == 0xC2)
+                {
+                    int imm = buf[i + 1] | (buf[i + 2] << 8);
+                    last = imm;
+                }
+            }
+            if (last == null) return null;
+            if (last > 128) return null;
+            if (last % 4 != 0) return null;
+            return last;
+        }
+    }
 
     private sealed record ChildJsonResult(
         int ExitCode,
