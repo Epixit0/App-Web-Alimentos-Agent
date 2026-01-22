@@ -232,30 +232,50 @@ function loadScanDLL(dllPath, dllName) {
 
 // Para captura, normalmente se usa ftrScanAPI.dll. FTRAPI.dll puede existir
 // pero no es necesaria para obtener frames en esta versión del agente.
-ftrScanAPI = loadScanDLL(ftrScanAPIPath, "ftrScanAPI.dll");
+let scannerLibInitAttempted = false;
 
-if (!ftrScanAPI) {
-  console.log("  Intentando cargar desde FTRAPI.dll...");
-  ftrScanAPI = loadScanDLL(ftrAPIPath, "FTRAPI.dll");
-} else if (fileExists(ftrAPIPath)) {
-  // Si ftrScanAPI.dll ya cargó, reporta incompatibilidad de FTRAPI.dll como warning
-  // (en vez de error) para evitar confusión cuando hay DLLs mezcladas.
-  const expected = getExpectedWindowsDllArch();
-  const detected = detectPeMachine(ftrAPIPath);
-  if (detected.arch && detected.arch !== expected) {
-    console.warn(
-      `[WARN] FTRAPI.dll parece ser ${detected.arch} pero tu Node es ${expected}. ` +
-        `Si ftrScanAPI.dll ya cargó, la captura puede funcionar igual. ` +
-        `Evita mezclar DLLs x86/x64 y usa el mismo paquete (x86 o x64) para ambas.`,
+function ensureScannerLibraryLoaded() {
+  if (scannerLibInitAttempted) return;
+  scannerLibInitAttempted = true;
+
+  // Re-evalúa paths desde env (puede venir de config.json)
+  const ftrAPIPathRuntime =
+    typeof process.env.FTRSCAN_FALLBACK_DLL_PATH === "string" &&
+    process.env.FTRSCAN_FALLBACK_DLL_PATH.trim()
+      ? process.env.FTRSCAN_FALLBACK_DLL_PATH.trim()
+      : ftrAPIPathDefault;
+
+  const ftrScanAPIPathRuntime =
+    typeof process.env.FTRSCAN_DLL_PATH === "string" &&
+    process.env.FTRSCAN_DLL_PATH.trim()
+      ? process.env.FTRSCAN_DLL_PATH.trim()
+      : ftrScanAPIPathDefault;
+
+  ftrScanAPI = loadScanDLL(ftrScanAPIPathRuntime, "ftrScanAPI.dll");
+
+  if (!ftrScanAPI) {
+    console.log("  Intentando cargar desde FTRAPI.dll...");
+    ftrScanAPI = loadScanDLL(ftrAPIPathRuntime, "FTRAPI.dll");
+  } else if (fileExists(ftrAPIPathRuntime)) {
+    // Si ftrScanAPI.dll ya cargó, reporta incompatibilidad de FTRAPI.dll como warning
+    // (en vez de error) para evitar confusión cuando hay DLLs mezcladas.
+    const expected = getExpectedWindowsDllArch();
+    const detected = detectPeMachine(ftrAPIPathRuntime);
+    if (detected.arch && detected.arch !== expected) {
+      console.warn(
+        `[WARN] FTRAPI.dll parece ser ${detected.arch} pero tu Node es ${expected}. ` +
+          `Si ftrScanAPI.dll ya cargó, la captura puede funcionar igual. ` +
+          `Evita mezclar DLLs x86/x64 y usa el mismo paquete (x86 o x64) para ambas.`,
+      );
+    }
+  }
+
+  if (!ftrScanAPI) {
+    console.error("[ERROR] No se pudo cargar ninguna DLL de escaneo");
+    console.error(
+      "[WARN] El lector de huellas no estará disponible en el agente",
     );
   }
-}
-
-if (!ftrScanAPI) {
-  console.error("[ERROR] No se pudo cargar ninguna DLL de escaneo");
-  console.error(
-    "[WARN] El lector de huellas no estará disponible en el agente",
-  );
 }
 
 const FTR_TRUE = 1;
@@ -301,6 +321,7 @@ class FingerprintScanner {
 
   openDevice() {
     try {
+      ensureScannerLibraryLoaded();
       if (!ftrScanAPI) {
         this.isOpen = false;
         return false;
@@ -327,6 +348,7 @@ class FingerprintScanner {
 
   isDeviceAvailable() {
     try {
+      ensureScannerLibraryLoaded();
       if (!ftrScanAPI) {
         return false;
       }
@@ -343,6 +365,7 @@ class FingerprintScanner {
 
   getFrame(bufferSize = 153600) {
     try {
+      ensureScannerLibraryLoaded();
       if (!ftrScanAPI) {
         return null;
       }
@@ -393,6 +416,7 @@ class FingerprintScanner {
 
   async getFrameAsync(bufferSize = 153600) {
     try {
+      ensureScannerLibraryLoaded();
       if (!ftrScanAPI) return null;
       if (!FTRSCAN_FRAME_PARAMETERS) return null;
       if (!this.isOpen || !this.handle || this.isNullHandle(this.handle))

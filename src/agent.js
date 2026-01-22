@@ -85,6 +85,38 @@ const resolvedConfigPath =
   defaultWindowsConfigPath ||
   defaultLocalConfigPath;
 
+function applyEnvFromConfigFile() {
+  const fileConfig = safeReadJson(resolvedConfigPath);
+  const cfg = fileConfig && typeof fileConfig === "object" ? fileConfig : null;
+  const env = cfg?.env;
+  if (!env || typeof env !== "object") return;
+
+  const overrideExisting = cfg?.envOverrideExisting === true;
+  const applied = [];
+
+  for (const [key, raw] of Object.entries(env)) {
+    if (typeof key !== "string" || !key.trim()) continue;
+    if (
+      raw == null ||
+      (typeof raw !== "string" && typeof raw !== "number" && typeof raw !== "boolean")
+    ) {
+      continue;
+    }
+
+    const val = String(raw);
+    const already = Object.prototype.hasOwnProperty.call(process.env, key);
+    if (already && !overrideExisting) continue;
+    process.env[key] = val;
+    applied.push(key);
+  }
+
+  if (applied.length) {
+    console.log(
+      `[INFO] Variables env aplicadas desde config.json: ${applied.sort().join(", ")}`,
+    );
+  }
+}
+
 function normalizeBaseUrl(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -216,6 +248,10 @@ if (!nodeFetch) {
 console.log(
   `Fingerprint agent iniciado. Config esperado en: ${resolvedConfigPath}`,
 );
+
+// OJO: fingerprintScanner y fingerprintMatcher leen process.env para ubicar DLLs.
+// Por eso aplicamos env del config ANTES de inicializarlos.
+applyEnvFromConfigFile();
 
 try {
   const info = getMatcherInfo();
