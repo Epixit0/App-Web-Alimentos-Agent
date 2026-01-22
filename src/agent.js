@@ -494,10 +494,122 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
   return { matched: false };
 }
 
-async function capture(jobType) {
-  const enrollProvider = String(
-    process.env.FTR_ENROLL_PROVIDER || "native",
-  ).trim();
+function pickLatestTmlFile(dirPath, minMtimeMs = 0) {
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  const tml = entries
+    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".tml"))
+    .map((e) => {
+      const full = path.join(dirPath, e.name);
+      let st;
+      try {
+        st = fs.statSync(full);
+      } catch {
+        st = null;
+      }
+      return { full, mtimeMs: st?.mtimeMs ?? 0 };
+    })
+    .filter((x) => x.mtimeMs > (Number.isFinite(minMtimeMs) ? minMtimeMs : 0))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  return tml.length ? tml[0].full : null;
+}
+
+async function capture(job) {
+  const jobType = job?.type;
+  const enrollProvider = String(process.env.FTR_ENROLL_PROVIDER || "native")
+    .trim()
+    .toLowerCase();
+
+  const debugCapture =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_CAPTURE || "").trim() === "1";
+  if (debugCapture) {
+    console.log(
+      `[DEBUG] capture start: jobType=${jobType || "?"} provider=${enrollProvider || "?"}`,
+    );
+  }
+
+  // Opción más simple/estable: usar templates ya generados por WorkedEx (.tml).
+  // Esto evita totalmente llamadas nativas al SDK durante el enroll.
+  // Recomendado cuando la captura vía FTRAPI/ftrScanAPI está inestable.
+  if (
+    enrollProvider === "tml" &&
+    (jobType === "enroll" || jobType === "verify")
+  ) {
+    const tmlPathExplicit = String(process.env.FTR_TML_PATH || "").trim();
+    const tmlDir = String(
+      process.env.FTR_TML_DIR ||
+        (process.platform === "win32" ? "C:\\FutronicSDK\\DataBase" : ""),
+    ).trim();
+
+    const receivedAtMs =
+      typeof job?._receivedAtMs === "number" &&
+      Number.isFinite(job._receivedAtMs)
+        ? job._receivedAtMs
+        : Date.now();
+
+    const timeoutMsRaw = Number(process.env.FTR_TML_TIMEOUT_MS || 60_000);
+    const timeoutMs =
+      Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+        ? Math.min(timeoutMsRaw, 10 * 60_000)
+        : 60_000;
+    const waitMsRaw = Number(process.env.FTR_TML_WAIT_MS || 250);
+    const waitMs =
+      Number.isFinite(waitMsRaw) && waitMsRaw >= 0
+        ? Math.min(waitMsRaw, 5000)
+        : 250;
+
+    let tmlPath = null;
+    if (tmlPathExplicit) {
+      tmlPath = tmlPathExplicit;
+    } else if (tmlDir && fs.existsSync(tmlDir)) {
+      // Esperar un archivo .tml NUEVO (creado/modificado después de que llegó el job)
+      // para evitar reusar un template viejo.
+      const minMtime = receivedAtMs - 500; // pequeña tolerancia
+      const started = Date.now();
+      for (;;) {
+        tmlPath = pickLatestTmlFile(tmlDir, minMtime);
+        if (tmlPath) break;
+        if (Date.now() - started >= timeoutMs) break;
+        await sleep(waitMs);
+      }
+    }
+
+    if (!tmlPath || !fs.existsSync(tmlPath)) {
+      throw new Error(
+        "FTR_ENROLL_PROVIDER=tml pero no se encontró .tml. " +
+          "Crea/guarda un .tml en WorkedEx (C:\\FutronicSDK\\DataBase) o configura FTR_TML_PATH/FTR_TML_DIR.",
+      );
+    }
+
+    const buf = fs.readFileSync(tmlPath);
+    if (!Buffer.isBuffer(buf) || buf.length === 0) {
+      throw new Error(`El archivo .tml está vacío: ${tmlPath}`);
+    }
+    if (buf.length > 1024 * 1024) {
+      throw new Error(
+        `El archivo .tml es demasiado grande (${buf.length} bytes): ${tmlPath}`,
+      );
+    }
+
+    const consume = String(process.env.FTR_TML_CONSUME || "").trim() === "1";
+    if (consume) {
+      try {
+        const importedDir = path.join(path.dirname(tmlPath), "Imported");
+        fs.mkdirSync(importedDir, { recursive: true });
+        const safeJob = String(job?._id || job?.workerId || Date.now());
+        const dest = path.join(
+          importedDir,
+          `${safeJob}.${jobType || "job"}.tml`,
+        );
+        fs.renameSync(tmlPath, dest);
+      } catch {
+        // no bloquear el enroll si el move falla
+      }
+    }
+
+    console.log(`[INFO] ${jobType} usando template .tml: ${tmlPath}`);
+    return buf;
+  }
 
   // Opción estable: usar un ejecutable externo (C#/.NET) para hablar con Futronic.
   // Esto evita FFI frágil en Node y replica mejor un flujo tipo WorkedEx.
@@ -788,7 +900,7 @@ while (true) {
   console.log(`Job recibido: ${job._id} tipo=${job.type}`);
 
   try {
-    const template = await capture(job.type);
+    const template = await capture({ ...job, _receivedAtMs: Date.now() });
 
     if (job.type === "enroll") {
       const dupe = await findDuplicateForEnroll(
