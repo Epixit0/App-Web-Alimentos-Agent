@@ -369,27 +369,50 @@ async function listTemplates(runtime, params) {
 }
 
 function decodeTemplateFromApi(item) {
-  // El API ahora debe enviar el template en Base64 puro, sin comprimir.
-  // El campo puede ser 'template' (legacy) o 'templateBase64'.
-  const b64 = item?.templateBase64 || item?.template || null;
-  if (typeof b64 !== "string" || !b64) {
+  const b64 =
+    item?.templateBase64 || item?.templateBase64Gzip || item?.template || null;
+  if (typeof b64 !== "string" || !b64) return null;
+
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_TEMPLATE_DECODE || "").trim() ===
+    "1";
+
+  let buf;
+  try {
+    buf = Buffer.from(b64, "base64");
+  } catch {
     return null;
   }
 
-  try {
-    const buf = Buffer.from(b64, "base64");
-    if (buf.length > 0) {
-      // Log para confirmar que el buffer se decodificó correctamente
-      console.log(`[INFO] Template decodificado: ${buf.length} bytes`);
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return null;
+
+  // Si el template viene comprimido en Gzip (encabezado H4sI...), lo descomprimimos.
+  // Esto es necesario porque el backend está guardando los templates comprimidos.
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+    try {
+      const out = zlib.gunzipSync(buf);
+      if (debug) {
+        console.log(
+          `[DEBUG] template decode: gzip ok raw=${buf.length} bytes -> tpl=${out.length} bytes`,
+        );
+      }
+      return out;
+    } catch (e) {
+      if (debug) {
+        console.log(
+          `[DEBUG] template decode: gzip FAIL raw=${buf.length} bytes err=${e?.message || String(e)}`,
+        );
+      }
+      // Si falla la descompresión, devolvemos el buffer crudo para que el matcher falle explícitamente.
       return buf;
     }
-    return null;
-  } catch (e) {
-    console.error(
-      `[ERROR] Falló la decodificación del template Base64: ${e.message}`,
-    );
-    return null;
   }
+
+  if (debug) {
+    console.log(`[DEBUG] template decode: raw=${buf.length} bytes (no gzip)`);
+  }
+
+  return buf;
 }
 
 async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
