@@ -118,6 +118,110 @@ function rvaToFileOffset(sections, rva) {
   return null;
 }
 
+function parseExportOrdinalMap(buf) {
+  const info = getPeInfo(buf);
+  if (!info.ok) return { ok: false, error: info.error };
+  const sections = getSections(buf, info);
+
+  const peOffset = info.peOffset;
+  const optOffset = peOffset + 24;
+  const magic = readU16(buf, optOffset);
+  const isPE32Plus = magic === 0x20b;
+  const dataDirOffset = optOffset + (isPE32Plus ? 112 : 96);
+  const exportRva = readU32(buf, dataDirOffset + 0);
+  if (!exportRva) return { ok: true, arch: info.arch, ordinalMap: new Map() };
+
+  const exportOff = rvaToFileOffset(sections, exportRva);
+  if (exportOff == null) {
+    return { ok: false, error: "No se pudo mapear ExportTable RVA" };
+  }
+
+  // IMAGE_EXPORT_DIRECTORY
+  const ordinalBase = readU32(buf, exportOff + 16) ?? 0;
+  const numberOfFunctions = readU32(buf, exportOff + 20) ?? 0;
+  const numberOfNames = readU32(buf, exportOff + 24) ?? 0;
+  const addressOfFunctionsRva = readU32(buf, exportOff + 28) ?? 0;
+  const addressOfNamesRva = readU32(buf, exportOff + 32) ?? 0;
+  const addressOfNameOrdinalsRva = readU32(buf, exportOff + 36) ?? 0;
+
+  const funcsOff = rvaToFileOffset(sections, addressOfFunctionsRva);
+  const namesOff = rvaToFileOffset(sections, addressOfNamesRva);
+  const ordOff = rvaToFileOffset(sections, addressOfNameOrdinalsRva);
+  if (funcsOff == null || namesOff == null || ordOff == null) {
+    return { ok: false, error: "Tablas de export inválidas" };
+  }
+
+  // Prellenar: ordinal -> null
+  const ordinalMap = new Map();
+  for (let i = 0; i < numberOfFunctions; i += 1) {
+    ordinalMap.set(ordinalBase + i, null);
+  }
+
+  // Mapear nombres a ordinales
+  for (let i = 0; i < numberOfNames; i += 1) {
+    const nameRva = readU32(buf, namesOff + i * 4);
+    const nameOff = nameRva != null ? rvaToFileOffset(sections, nameRva) : null;
+    const name = nameOff != null ? readAsciiZ(buf, nameOff, 1024) : null;
+
+    const ordIndex = readU16(buf, ordOff + i * 2);
+    if (ordIndex == null) continue;
+    const ordinal = ordinalBase + ordIndex;
+    if (name) ordinalMap.set(ordinal, name);
+  }
+
+  return { ok: true, arch: info.arch, ordinalMap };
+}
+
+function tryResolveImportsByOrdinal(imports, inputFilePath) {
+  const baseDir = path.dirname(path.resolve(inputFilePath));
+  const resolved = [];
+
+  for (const imp of imports) {
+    const hasOrdinal = Array.isArray(imp.functions)
+      ? imp.functions.some((f) => typeof f === "string" && f.startsWith("#"))
+      : false;
+    if (!hasOrdinal) {
+      resolved.push({ ...imp, resolvedFunctions: null });
+      continue;
+    }
+
+    const dllNameRaw = String(imp.dll || "");
+    const dllName = dllNameRaw.replace(/\s*\(delay\)\s*$/i, "");
+    const candidate = path.join(baseDir, dllName);
+    if (!fs.existsSync(candidate)) {
+      resolved.push({ ...imp, resolvedFunctions: null });
+      continue;
+    }
+
+    let dllBuf;
+    try {
+      dllBuf = fs.readFileSync(candidate);
+    } catch {
+      resolved.push({ ...imp, resolvedFunctions: null });
+      continue;
+    }
+
+    const mapRes = parseExportOrdinalMap(dllBuf);
+    if (!mapRes.ok) {
+      resolved.push({ ...imp, resolvedFunctions: null });
+      continue;
+    }
+
+    const ordinalMap = mapRes.ordinalMap;
+    const resolvedFunctions = imp.functions.map((f) => {
+      if (typeof f !== "string" || !f.startsWith("#")) return f;
+      const n = Number(f.slice(1));
+      if (!Number.isFinite(n)) return f;
+      const name = ordinalMap.get(n);
+      return name ? `${name} (${f})` : f;
+    });
+
+    resolved.push({ ...imp, resolvedFunctions });
+  }
+
+  return resolved;
+}
+
 function parseImports(buf) {
   const info = getPeInfo(buf);
   if (!info.ok) return { ok: false, error: info.error };
@@ -315,10 +419,12 @@ function main() {
     process.exit(1);
   }
 
+  const importsResolved = tryResolveImportsByOrdinal(result.imports, full);
+
   const simplified = {
     file,
     arch: result.arch,
-    imports: result.imports,
+    imports: importsResolved,
   };
 
   console.log(JSON.stringify(simplified, null, 2));
