@@ -576,7 +576,7 @@ internal static class Program
             var frameCopy = Args.GetInt(opt, "frameCopy", 0) != 0;
             var scanCallConv = (Args.GetStr(opt, "scanCallConv") ?? "stdcall").Trim().ToLowerInvariant();
             var diag = Args.GetInt(opt, "diag", 0) != 0;
-            var visible = Args.GetInt(opt, "visible", 0) != 0;
+            var scanVisible = Args.GetInt(opt, "visible", 0) != 0;
 
             var result = WinFormsLoop.RunOnUiThread(_hwnd =>
             {
@@ -742,7 +742,7 @@ internal static class Program
                         try { close(dev); } catch { }
                     }
                 }
-            }, visible);
+            }, scanVisible);
 
             JsonOut.Print(result.Payload);
             return result.ExitCode;
