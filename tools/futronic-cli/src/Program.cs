@@ -435,7 +435,7 @@ internal static class Program
 
         try
         {
-            if (cmd != "enroll" && cmd != "capture")
+            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe")
             {
                 JsonOut.Print(new { ok = false, error = $"Comando no soportado: {cmd}" });
                 return 2;
@@ -567,6 +567,112 @@ internal static class Program
                             return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", handleMode, scanDll = scanDllPath });
                         }
 
+                        // Comando mtinit: solo intenta MTInitialize con un arg específico.
+                        if (cmd == "mtinit")
+                        {
+                            if (!hasMt)
+                            {
+                                return new CliResult(10, new { ok = false, stage = "mtInit", error = "No hay exports MT*", hasMt });
+                            }
+
+                            if (!mtInitArgExplicit)
+                            {
+                                return new CliResult(2, new { ok = false, stage = "mtInit", error = "Falta --mtInitArg (mtinit solo prueba un valor)" });
+                            }
+
+                            int r;
+                            r = mtInit!(mtInitArg);
+                            if (r != 0)
+                            {
+                                return new CliResult(10, new { ok = false, stage = "mtInit", code = r, mtInitArg });
+                            }
+
+                            mtInitialized = true;
+                            if (!mtTermArgExplicit) mtTermArg = mtInitArg;
+                            if (mtUseInitArgForCtx)
+                            {
+                                if (!mtCaptureArg3Explicit) mtCaptureArg3 = mtInitArg;
+                                if (!mtEnrollArg5Explicit) mtEnrollArg5 = mtInitArg;
+                            }
+
+                            return new CliResult(0, new
+                            {
+                                ok = true,
+                                stage = "mtInit",
+                                code = 0,
+                                mtInitArg,
+                                mtTermArg,
+                                mtCaptureArg3,
+                                mtEnrollArg5,
+                                scan = scanInfo
+                            });
+                        }
+
+                        // Comando mtinit-probe: prueba múltiples mtInitArg en subprocesos y reporta cuál no crashea
+                        // y devuelve code=0.
+                        if (cmd == "mtinit-probe")
+                        {
+                            var selfExe = Environment.ProcessPath;
+                            if (string.IsNullOrWhiteSpace(selfExe) || !File.Exists(selfExe))
+                            {
+                                return new CliResult(127, new { ok = false, stage = "mtInitProbe", error = "No se pudo resolver Environment.ProcessPath" });
+                            }
+
+                            var candidates = new List<int>();
+                            if (mtInitTry.Count > 0) candidates.AddRange(mtInitTry);
+                            else candidates.AddRange(new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 });
+
+                            var attempts = new List<object>();
+                            int? bestArg = null;
+
+                            foreach (var candidate in candidates.Distinct())
+                            {
+                                var childArgs = new List<string>
+                                {
+                                    "mtinit",
+                                    "--dll", dllPath,
+                                    "--scanDll", scanDllPath ?? "",
+                                    "--handle", handleMode,
+                                    "--mtInitArg", candidate.ToString(),
+                                    "--mtUseInitArgForCtx", mtUseInitArgForCtx ? "1" : "0",
+                                    "--isolatedChild", "1"
+                                };
+                                if (useNullHwnd)
+                                {
+                                    childArgs.Add("--nullHwnd");
+                                    childArgs.Add("1");
+                                }
+
+                                // Ejecutar el subproceso mtinit
+                                var child = RunChildJson(selfExe, childArgs);
+                                attempts.Add(new
+                                {
+                                    mtInitArg = candidate,
+                                    exitCode = child.ExitCode,
+                                    crashed = child.Crashed,
+                                    ok = child.Ok,
+                                    stage = child.Stage,
+                                    code = child.Code,
+                                    error = child.Error
+                                });
+
+                                if (!child.Crashed && child.Ok && child.Stage == "mtInit" && child.Code == 0)
+                                {
+                                    bestArg = candidate;
+                                    break;
+                                }
+                            }
+
+                            return new CliResult(bestArg.HasValue ? 0 : 10, new
+                            {
+                                ok = bestArg.HasValue,
+                                stage = "mtInitProbe",
+                                bestMtInitArg = bestArg,
+                                attempts,
+                                scan = scanInfo
+                            });
+                        }
+
                         // Si se pidió mt-scan, inicializar MT* ahora que tenemos scanHandle.
                         if (mtInitDeferred)
                         {
@@ -575,57 +681,25 @@ internal static class Program
                                 return new CliResult(10, new { ok = false, stage = "mtInit", error = "Se pidió --api mt-scan pero no hay exports MT*", hasMt, apiRequested });
                             }
 
-                            // CRÍTICO: NO usar scanHandle como mtInitArg. Eso puede causar 0xC0000005.
-                            // En este SDK, MTInitialize parece requerir un identificador pequeño (0/1/2...).
-                            var candidates = new List<int>();
-                            if (mtInitArgExplicit)
-                                candidates.Add(mtInitArg);
-                            else if (mtInitTry.Count > 0)
-                                candidates.AddRange(mtInitTry);
-                            else
-                                candidates.AddRange(new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 });
-
-                            var attempts = new List<object>();
-                            int selectedArg = int.MinValue;
-                            int selectedCode = int.MinValue;
-
-                            foreach (var candidate in candidates.Distinct())
+                            // Para evitar crashes, mt-scan requiere un único --mtInitArg.
+                            if (!mtInitArgExplicit)
                             {
-                                int r;
-                                try
-                                {
-                                    r = mtInit!(candidate);
-                                }
-                                catch (Exception ex)
-                                {
-                                    attempts.Add(new { mtInitArg = candidate, code = -1, error = ex.Message, type = ex.GetType().FullName });
-                                    continue;
-                                }
-
-                                attempts.Add(new { mtInitArg = candidate, code = r });
-                                if (r == 0)
-                                {
-                                    selectedArg = candidate;
-                                    selectedCode = r;
-                                    break;
-                                }
-                            }
-
-                            mtInitDeferredCode = selectedCode;
-                            if (selectedCode != 0)
-                            {
-                                return new CliResult(10, new
+                                return new CliResult(2, new
                                 {
                                     ok = false,
                                     stage = "mtInit",
-                                    error = "MTInitialize no devolvió 0 con los candidatos probados",
-                                    attempts,
+                                    error = "mt-scan requiere --mtInitArg explícito. Primero corre: mtinit-probe --mtInitTry 0,1,2,...",
                                     apiRequested
                                 });
                             }
 
+                            int r = mtInit!(mtInitArg);
+                            mtInitDeferredCode = r;
+                            if (r != 0)
+                            {
+                                return new CliResult(10, new { ok = false, stage = "mtInit", code = r, mtInitArg, apiRequested });
+                            }
                             mtInitialized = true;
-                            mtInitArg = selectedArg;
                             if (!mtTermArgExplicit) mtTermArg = mtInitArg;
 
                             if (mtUseInitArgForCtx)
@@ -1330,6 +1404,15 @@ internal static class Program
         Dictionary<int, int> SetCodes
     );
 
+    private sealed record ChildJsonResult(
+        int ExitCode,
+        bool Crashed,
+        bool Ok,
+        string? Stage,
+        int? Code,
+        string? Error
+    );
+
     private static ChildCaptureResult RunChildCapture(string selfExe, List<string> childArgs)
     {
         try
@@ -1415,6 +1498,66 @@ internal static class Program
         catch (Exception ex)
         {
             return new ChildCaptureResult(127, false, "spawn", ex.Message, new List<int>(), new Dictionary<int, int>());
+        }
+    }
+
+    private static ChildJsonResult RunChildJson(string selfExe, List<string> childArgs)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = selfExe,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            foreach (var a in childArgs)
+                psi.ArgumentList.Add(a);
+
+            using var p = Process.Start(psi);
+            if (p == null)
+                return new ChildJsonResult(127, false, false, "spawn", null, "No se pudo iniciar el proceso hijo");
+
+            var stdout = p.StandardOutput.ReadToEnd();
+            var stderr = p.StandardError.ReadToEnd();
+            p.WaitForExit();
+
+            var crashed = p.ExitCode == unchecked((int)0xC0000005);
+            if (crashed)
+                return new ChildJsonResult(p.ExitCode, true, false, "crash", null, string.IsNullOrWhiteSpace(stderr) ? "0xC0000005" : stderr.Trim());
+
+            bool ok = false;
+            string? stage = null;
+            int? code = null;
+            string? error = null;
+
+            if (!string.IsNullOrWhiteSpace(stdout))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(stdout.Trim());
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True) ok = true;
+                    if (root.TryGetProperty("stage", out var st) && st.ValueKind == JsonValueKind.String) stage = st.GetString();
+                    if (root.TryGetProperty("code", out var cEl) && cEl.ValueKind == JsonValueKind.Number && cEl.TryGetInt32(out var n)) code = n;
+                    if (root.TryGetProperty("error", out var er) && er.ValueKind == JsonValueKind.String) error = er.GetString();
+                }
+                catch
+                {
+                    // ignore parse failures
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(stderr))
+                error ??= stderr.Trim();
+
+            return new ChildJsonResult(p.ExitCode, false, ok, stage, code, error);
+        }
+        catch (Exception ex)
+        {
+            return new ChildJsonResult(127, false, false, "spawn", null, ex.Message);
         }
     }
 }
