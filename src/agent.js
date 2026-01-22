@@ -369,17 +369,49 @@ async function listTemplates(runtime, params) {
 }
 
 function decodeTemplateFromApi(item) {
-  const b64 = item?.templateBase64Gzip;
+  const b64 =
+    item?.templateBase64 || item?.templateBase64Gzip || item?.template || null;
   if (typeof b64 !== "string" || !b64) return null;
-  const gz = Buffer.from(b64, "base64");
-  if (gz.length >= 2 && gz[0] === 0x1f && gz[1] === 0x8b) {
+
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_TEMPLATE_DECODE || "").trim() ===
+    "1";
+
+  let buf;
+  try {
+    buf = Buffer.from(b64, "base64");
+  } catch {
+    return null;
+  }
+
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return null;
+
+  // Si es gzip, intentamos descomprimir. Si falla, devolvemos el buffer crudo
+  // para que el matcher pueda reportar un error explícito (en vez de saltar silenciosamente).
+  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
     try {
-      return zlib.gunzipSync(gz);
-    } catch {
-      return null;
+      const out = zlib.gunzipSync(buf);
+      if (debug) {
+        console.log(
+          `[DEBUG] template decode: gzip ok raw=${buf.length} bytes -> tpl=${out.length} bytes`,
+        );
+      }
+      return out;
+    } catch (e) {
+      if (debug) {
+        console.log(
+          `[DEBUG] template decode: gzip FAIL raw=${buf.length} bytes err=${e?.message || String(e)}`,
+        );
+      }
+      return buf;
     }
   }
-  return gz;
+
+  if (debug) {
+    console.log(`[DEBUG] template decode: raw=${buf.length} bytes (no gzip)`);
+  }
+
+  return buf;
 }
 
 async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
@@ -395,6 +427,9 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  let seen = 0;
+  let decoded = 0;
+  let decodeNull = 0;
   let checked = 0;
   let comparable = 0;
   let errorCount = 0;
@@ -411,8 +446,13 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
     });
 
     for (const item of items) {
+      seen += 1;
       const base = decodeTemplateFromApi(item);
-      if (!base) continue;
+      if (!base) {
+        decodeNull += 1;
+        continue;
+      }
+      decoded += 1;
 
       const result = await verifyTemplate(base, capturedTemplate);
       checked += 1;
@@ -460,8 +500,17 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
   if (debug) {
     const bestScoreText = bestScore === -Infinity ? "n/a" : String(bestScore);
     console.log(
-      `[DEBUG] duplicate-check complete: checked=${checked} comparable=${comparable} errors=${errorCount} bestScore=${bestScoreText} bestIndex=${bestIndex} firstError=${firstError || ""}`,
+      `[DEBUG] duplicate-check complete: seen=${seen} decoded=${decoded} decodeNull=${decodeNull} checked=${checked} comparable=${comparable} errors=${errorCount} bestScore=${bestScoreText} bestIndex=${bestIndex} firstError=${firstError || ""}`,
     );
+  }
+
+  if (seen > 0 && decoded === 0) {
+    return {
+      duplicate: false,
+      error:
+        "No se pudo decodificar ningún template desde el backend para comparar duplicados. " +
+        "Revisa que el API esté enviando templateBase64/templateBase64Gzip y que el base64 sea válido.",
+    };
   }
 
   // Si había templates para comparar, pero ninguna comparación produjo score/match,
@@ -492,6 +541,9 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  let seen = 0;
+  let decoded = 0;
+  let decodeNull = 0;
   let checked = 0;
   let comparable = 0;
   let errorCount = 0;
@@ -511,8 +563,13 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
     });
 
     for (const item of items) {
+      seen += 1;
       const base = decodeTemplateFromApi(item);
-      if (!base) continue;
+      if (!base) {
+        decodeNull += 1;
+        continue;
+      }
+      decoded += 1;
 
       const result = await verifyTemplate(base, capturedTemplate);
       checked += 1;
@@ -560,8 +617,17 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
   if (debug) {
     const bestScoreText = best.score === -Infinity ? "n/a" : String(best.score);
     console.log(
-      `[DEBUG] identify complete: checked=${checked} comparable=${comparable} errors=${errorCount} bestScore=${bestScoreText} bestWorker=${best.workerId || "n/a"} firstError=${firstError || ""}`,
+      `[DEBUG] identify complete: seen=${seen} decoded=${decoded} decodeNull=${decodeNull} checked=${checked} comparable=${comparable} errors=${errorCount} bestScore=${bestScoreText} bestWorker=${best.workerId || "n/a"} firstError=${firstError || ""}`,
     );
+  }
+
+  if (seen > 0 && decoded === 0) {
+    return {
+      matched: false,
+      error:
+        "No se pudo decodificar ningún template desde el backend para identificar. " +
+        "Revisa que el API esté enviando templateBase64/templateBase64Gzip y que el base64 sea válido.",
+    };
   }
 
   if (checked > 0 && comparable === 0 && errorCount > 0) {
@@ -591,6 +657,9 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
   }
 
   let cursor = null;
+  let seen = 0;
+  let decoded = 0;
+  let decodeNull = 0;
   let checked = 0;
   let comparable = 0;
   let errorCount = 0;
@@ -605,8 +674,13 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
     });
 
     for (const item of items) {
+      seen += 1;
       const base = decodeTemplateFromApi(item);
-      if (!base) continue;
+      if (!base) {
+        decodeNull += 1;
+        continue;
+      }
+      decoded += 1;
 
       const result = await verifyTemplate(base, capturedTemplate);
       checked += 1;
@@ -637,6 +711,15 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 
   if (best.score !== -Infinity) return best;
 
+  if (seen > 0 && decoded === 0) {
+    return {
+      matched: false,
+      error:
+        "No se pudo decodificar ningún template del trabajador para verificar. " +
+        "Revisa que el API esté enviando templateBase64/templateBase64Gzip y que el base64 sea válido.",
+    };
+  }
+
   if (checked > 0 && comparable === 0 && errorCount > 0) {
     return {
       matched: false,
@@ -647,48 +730,6 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
   }
 
   return { matched: false };
-}
-
-function pickLatestTmlFile(dirPath, minMtimeMs = 0) {
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  const tml = entries
-    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".tml"))
-    .map((e) => {
-      const full = path.join(dirPath, e.name);
-      let st;
-      try {
-        st = fs.statSync(full);
-      } catch {
-        st = null;
-      }
-      return { full, mtimeMs: st?.mtimeMs ?? 0 };
-    })
-    .filter((x) => x.mtimeMs >= (Number.isFinite(minMtimeMs) ? minMtimeMs : 0))
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  return tml.length ? tml[0].full : null;
-}
-
-function listRecentTmlFiles(dirPath, take = 5) {
-  try {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    const files = entries
-      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".tml"))
-      .map((e) => {
-        const full = path.join(dirPath, e.name);
-        let st;
-        try {
-          st = fs.statSync(full);
-        } catch {
-          st = null;
-        }
-        return { name: e.name, full, mtimeMs: st?.mtimeMs ?? 0 };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return files.slice(0, Math.max(0, Math.min(20, Number(take) || 5)));
-  } catch {
-    return [];
-  }
 }
 
 async function capture(job) {
@@ -703,115 +744,6 @@ async function capture(job) {
     console.log(
       `[DEBUG] capture start: jobType=${jobType || "?"} provider=${enrollProvider || "?"}`,
     );
-  }
-
-  // Opción más simple/estable: usar templates ya generados por WorkedEx (.tml).
-  // Esto evita totalmente llamadas nativas al SDK durante el enroll.
-  // Recomendado cuando la captura vía FTRAPI/ftrScanAPI está inestable.
-  if (
-    enrollProvider === "tml" &&
-    (jobType === "enroll" || jobType === "verify" || jobType === "identify")
-  ) {
-    const tmlPathExplicit = String(process.env.FTR_TML_PATH || "").trim();
-    const tmlDir = String(
-      process.env.FTR_TML_DIR ||
-        (process.platform === "win32" ? "C:\\FutronicSDK\\DataBase" : ""),
-    ).trim();
-
-    const receivedAtMs =
-      typeof job?._receivedAtMs === "number" &&
-      Number.isFinite(job._receivedAtMs)
-        ? job._receivedAtMs
-        : Date.now();
-
-    const timeoutMsRaw = Number(process.env.FTR_TML_TIMEOUT_MS || 60_000);
-    const timeoutMs =
-      Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
-        ? Math.min(timeoutMsRaw, 10 * 60_000)
-        : 60_000;
-    const waitMsRaw = Number(process.env.FTR_TML_WAIT_MS || 250);
-    const waitMs =
-      Number.isFinite(waitMsRaw) && waitMsRaw >= 0
-        ? Math.min(waitMsRaw, 5000)
-        : 250;
-
-    let tmlPath = null;
-    if (tmlPathExplicit) {
-      tmlPath = tmlPathExplicit;
-    } else if (tmlDir && fs.existsSync(tmlDir)) {
-      // Esperar un archivo .tml NUEVO (creado/modificado después de que llegó el job)
-      // para evitar reusar un template viejo.
-      const tolRaw = Number(process.env.FTR_TML_MIN_MTIME_TOLERANCE_MS || 5000);
-      const tolMs =
-        Number.isFinite(tolRaw) && tolRaw >= 0
-          ? Math.min(tolRaw, 60_000)
-          : 5000;
-      const minMtime = receivedAtMs - tolMs;
-      const started = Date.now();
-      for (;;) {
-        tmlPath = pickLatestTmlFile(tmlDir, minMtime);
-        if (tmlPath) break;
-        if (Date.now() - started >= timeoutMs) break;
-        await sleep(waitMs);
-      }
-
-      if (!tmlPath && debugCapture) {
-        const recent = listRecentTmlFiles(tmlDir, 8);
-        const recentText = recent
-          .map((f) => `${f.name}@${Math.round(f.mtimeMs)}`)
-          .join(" | ");
-        console.log(
-          `[DEBUG] tml not found yet. dir=${tmlDir} minMtime=${Math.round(minMtime)} now=${Date.now()} recent=${recentText || "(none)"}`,
-        );
-      }
-    }
-
-    if (!tmlPath || !fs.existsSync(tmlPath)) {
-      let extra = "";
-      if (debugCapture && tmlDir) {
-        const recent = listRecentTmlFiles(tmlDir, 8);
-        if (recent.length) {
-          extra = ` Vistos: ${recent.map((f) => f.name).join(", ")}.`;
-        } else {
-          extra = " No se ven .tml en el directorio.";
-        }
-        extra += ` dir=${tmlDir}`;
-      }
-      throw new Error(
-        "FTR_ENROLL_PROVIDER=tml pero no se encontró .tml. " +
-          "Crea/guarda un .tml en WorkedEx (C:\\FutronicSDK\\DataBase) o configura FTR_TML_PATH/FTR_TML_DIR." +
-          extra,
-      );
-    }
-
-    const buf = fs.readFileSync(tmlPath);
-    if (!Buffer.isBuffer(buf) || buf.length === 0) {
-      throw new Error(`El archivo .tml está vacío: ${tmlPath}`);
-    }
-    if (buf.length > 1024 * 1024) {
-      throw new Error(
-        `El archivo .tml es demasiado grande (${buf.length} bytes): ${tmlPath}`,
-      );
-    }
-
-    const consume = String(process.env.FTR_TML_CONSUME || "").trim() === "1";
-    if (consume) {
-      try {
-        const importedDir = path.join(path.dirname(tmlPath), "Imported");
-        fs.mkdirSync(importedDir, { recursive: true });
-        const safeJob = String(job?._id || job?.workerId || Date.now());
-        const dest = path.join(
-          importedDir,
-          `${safeJob}.${jobType || "job"}.tml`,
-        );
-        fs.renameSync(tmlPath, dest);
-      } catch {
-        // no bloquear el enroll si el move falla
-      }
-    }
-
-    console.log(`[INFO] ${jobType} usando template .tml: ${tmlPath}`);
-    return buf;
   }
 
   // Opción estable: usar un ejecutable externo (C#/.NET) para hablar con Futronic.
