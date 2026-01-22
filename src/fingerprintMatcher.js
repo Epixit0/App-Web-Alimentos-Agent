@@ -193,13 +193,13 @@ function loadMatcher() {
       "FTR_SetBaseTemplate",
       "FTRSetBaseTemplateA",
       "FTR_SetBaseTemplateA",
-      "_FTRSetBaseTemplate@8",
-      "FTRSetBaseTemplate@8",
-      "_FTR_SetBaseTemplate@8",
-      "FTR_SetBaseTemplate@8",
+      "_FTRSetBaseTemplate@4",
+      "FTRSetBaseTemplate@4",
+      "_FTR_SetBaseTemplate@4",
+      "FTR_SetBaseTemplate@4",
     ],
     (loadedLib, name) =>
-      loadedLib.func("__stdcall", name, "int", ["void *", "FTR_DATA *"]),
+      loadedLib.func("__stdcall", name, "int", ["FTR_DATA *"]),
   );
 
   const identify = resolveFunction(
@@ -210,14 +210,13 @@ function loadMatcher() {
       "FTR_Identify",
       "FTRIdentifyA",
       "FTR_IdentifyA",
-      "_FTRIdentify@16",
-      "FTRIdentify@16",
-      "_FTR_Identify@16",
-      "FTR_Identify@16",
+      "_FTRIdentify@12",
+      "FTRIdentify@12",
+      "_FTR_Identify@12",
+      "FTR_Identify@12",
     ],
     (loadedLib, name) =>
       loadedLib.func("__stdcall", name, "int", [
-        "void *",
         "FTR_DATA *",
         "int *",
         "int *",
@@ -494,22 +493,36 @@ export async function createTemplateFromDevice(
     const callEnroll = () =>
       cached.FTREnroll(handle, purposeValue, koffi.as(out, "FTR_DATA *"));
     const callEnrollX = () => {
-      // 4º argumento desconocido: por defecto NULL.
-      // Permite override como entero (0/1/...) por si la DLL espera flags.
-      const arg4Raw = process.env.FTR_ENROLLX_ARG4;
-      const arg4Num = Number(arg4Raw);
-      const arg4 =
-        typeof arg4Raw === "string" &&
-        arg4Raw.trim() !== "" &&
-        Number.isFinite(arg4Num)
-          ? arg4Num
-          : null;
+      const mode = String(process.env.FTR_ENROLLX_ARG4_MODE || "ptr").trim();
 
+      if (mode === "null") {
+        return cached.FTREnrollX(
+          handle,
+          purposeValue,
+          koffi.as(out, "FTR_DATA *"),
+          null,
+        );
+      }
+
+      if (mode === "int") {
+        const arg4Raw = process.env.FTR_ENROLLX_ARG4;
+        const arg4Num = Number(arg4Raw);
+        const arg4 = Number.isFinite(arg4Num) ? arg4Num : 0;
+        return cached.FTREnrollX(
+          handle,
+          purposeValue,
+          koffi.as(out, "FTR_DATA *"),
+          arg4,
+        );
+      }
+
+      // default: ptr (int*)
+      const outArg = [0];
       return cached.FTREnrollX(
         handle,
         purposeValue,
         koffi.as(out, "FTR_DATA *"),
-        arg4,
+        outArg,
       );
     };
 
@@ -657,10 +670,7 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   }
 
   const base = { dwSize: baseTemplate.length, pData: baseTemplate };
-  const setResult = cached.FTRSetBaseTemplate(
-    null,
-    koffi.as(base, "FTR_DATA *"),
-  );
+  const setResult = cached.FTRSetBaseTemplate(koffi.as(base, "FTR_DATA *"));
   if (setResult !== 0) {
     return {
       matched: false,
@@ -676,7 +686,6 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   const score = [0];
 
   const identifyResult = cached.FTRIdentify(
-    null,
     koffi.as(probe, "FTR_DATA *"),
     matchedIndex,
     score,
