@@ -843,15 +843,47 @@ export async function createTemplateFromDevice(
           "1"
             ? null
             : handle;
-        const capResult = cached.FTRCaptureFrame(capHandle, purposeValue);
-        if (debug) {
-          console.log(
-            `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) purpose=${purposeValue} result=${capResult}`,
-          );
+        const capRetriesRaw = Number(
+          process.env.FTR_CAPTUREFRAME_RETRIES || 12,
+        );
+        const capRetries =
+          Number.isFinite(capRetriesRaw) && capRetriesRaw >= 0
+            ? Math.min(capRetriesRaw, 50)
+            : 12;
+        const capDelayRaw = Number(
+          process.env.FTR_CAPTUREFRAME_DELAY_MS || 150,
+        );
+        const capDelayMs =
+          Number.isFinite(capDelayRaw) && capDelayRaw >= 0
+            ? Math.min(capDelayRaw, 2000)
+            : 150;
+        const requireOk =
+          String(process.env.FTR_CAPTUREFRAME_REQUIRE_OK || "1").trim() !== "0";
+
+        let capResult = null;
+        for (let i = 0; i <= capRetries; i += 1) {
+          capResult = cached.FTRCaptureFrame(capHandle, purposeValue);
+          if (debug) {
+            console.log(
+              `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) purpose=${purposeValue} try=${i + 1}/${capRetries + 1} result=${capResult}`,
+            );
+          }
+
+          if (capResult === 201) {
+            tryProbeParams(capHandle, capHandle ? label : "null", purposeValue);
+          }
+
+          // 0 = OK (captura completada). Cualquier otro código: reintentar.
+          if (capResult === 0) break;
+          if (i < capRetries && capDelayMs > 0) {
+            await new Promise((r) => setTimeout(r, capDelayMs));
+          }
         }
 
-        if (capResult === 201) {
-          tryProbeParams(capHandle, capHandle ? label : "null", purposeValue);
+        if (requireOk && capResult !== 0) {
+          // Si la captura previa no se completó, evitamos llamar FTREnroll
+          // para no spamear 201 cuando el SDK requiere captura previa exitosa.
+          return null;
         }
       } catch (e) {
         if (debug) {
