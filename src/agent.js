@@ -495,6 +495,24 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 }
 
 async function capture(jobType) {
+  const useScanApi =
+    String(process.env.FTR_USE_SCANAPI || "1").trim() !== "0";
+
+  // Modo estilo WorkedEx: no abrir ftrScanAPI.dll para evitar que el dispositivo quede
+  // tomado por el driver de escaneo cuando FTRAPI.dll intenta capturar/enrolar.
+  // Esto solo aplica a enroll/verify (templates del SDK).
+  if (!useScanApi && (jobType === "enroll" || jobType === "verify")) {
+    try {
+      const tpl = await createTemplateFromDevice(null, jobType, {
+        preCapture: null,
+      });
+      if (tpl && tpl.length > 0) return tpl;
+      throw new Error("No se pudo generar template con FTREnroll.");
+    } catch (e) {
+      throw new Error(e?.message || String(e));
+    }
+  }
+
   const scanner = getScanner();
 
   if (!scanner.openDevice()) {
