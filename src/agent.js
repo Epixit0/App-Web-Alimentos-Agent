@@ -822,7 +822,18 @@ async function capture(job) {
         }
       } catch (e) {
         // Propaga un mensaje útil (incluye código de FTREnroll)
-        throw new Error(e?.message || String(e));
+        const errorMessage = e?.message || String(e);
+        if (
+          String(
+            process.env.FINGERPRINT_AGENT_ALLOW_FRAME_FALLBACK || "",
+          ).trim() === "1"
+        ) {
+          console.warn(
+            `[WARN] FTREnroll falló (${errorMessage}), usando frame como fallback.`,
+          );
+          return warm;
+        }
+        throw new Error(errorMessage);
       }
 
       // Fallback opcional (solo para diagnóstico). No recomendado para producción.
