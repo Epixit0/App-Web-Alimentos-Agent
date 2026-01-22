@@ -496,6 +496,8 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 
 async function capture(jobType) {
   const useScanApi = String(process.env.FTR_USE_SCANAPI || "1").trim() !== "0";
+  const scanApiCaptureFrames =
+    String(process.env.FTR_SCANAPI_CAPTURE_FRAMES || "1").trim() !== "0";
 
   // Modo estilo WorkedEx: no abrir ftrScanAPI.dll para evitar que el dispositivo quede
   // tomado por el driver de escaneo cuando FTRAPI.dll intenta capturar/enrolar.
@@ -526,6 +528,22 @@ async function capture(jobType) {
     if (jobType === "enroll" || jobType === "verify") {
       const debug =
         String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+      // Modo "open-only": obtenemos un handle válido, pero dejamos que FTRAPI.dll
+      // haga la captura/enrolamiento. Esto evita contención (scanAPI suele tomar el device).
+      if (!scanApiCaptureFrames) {
+        try {
+          const tpl = await createTemplateFromDevice(scanner.handle, jobType, {
+            preCapture: null,
+          });
+          if (tpl && tpl.length > 0) {
+            return tpl;
+          }
+          throw new Error("No se pudo generar template con FTREnroll.");
+        } catch (e) {
+          throw new Error(e?.message || String(e));
+        }
+      }
 
       // Warm-up: mantener el lector activo y asegurar que el frame tenga datos.
       // Con 1 solo intento a veces devuelve un frame vacío (todo ceros) sin que el
