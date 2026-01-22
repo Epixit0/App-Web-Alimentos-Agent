@@ -186,6 +186,94 @@ internal static class Program
         var visible = Args.GetInt(opt, "visible", 0) != 0;
         var scanDiagnostics = Args.GetInt(opt, "scanDiagnostics", 0) != 0;
 
+        // Modo aislado: ejecuta el comando real en un subproceso.
+        // Esto evita que access violations (0xC0000005) tumben el proceso padre.
+        var isolate = Args.GetInt(opt, "isolate", 0) != 0;
+        var isolatedChild = Args.GetInt(opt, "isolatedChild", 0) != 0;
+        if (isolate && !isolatedChild)
+        {
+            var selfExe = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(selfExe) && File.Exists(selfExe))
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = selfExe,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true,
+                    };
+
+                    // Re-enviar args, pero quitando --isolate y --isolatedChild, y agregando --isolatedChild 1.
+                    for (int i = 0; i < args.Length; i++)
+                    {
+                        var a = args[i];
+                        if (string.Equals(a, "--isolate", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(a, "--isolatedChild", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // saltar también el valor si existe
+                            if (i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal)) i++;
+                            continue;
+                        }
+                        psi.ArgumentList.Add(a);
+                    }
+                    psi.ArgumentList.Add("--isolatedChild");
+                    psi.ArgumentList.Add("1");
+
+                    using var p = Process.Start(psi);
+                    if (p == null)
+                    {
+                        JsonOut.Print(new { ok = false, stage = "isolate", error = "No se pudo iniciar el subproceso" });
+                        return 127;
+                    }
+
+                    var stdout = p.StandardOutput.ReadToEnd();
+                    var stderr = p.StandardError.ReadToEnd();
+                    p.WaitForExit();
+
+                    var crashed = p.ExitCode == unchecked((int)0xC0000005);
+                    if (crashed)
+                    {
+                        JsonOut.Print(new
+                        {
+                            ok = false,
+                            stage = "crash",
+                            crashed = true,
+                            exitCode = p.ExitCode,
+                            hint = "El SDK causó 0xC0000005 (access violation) en el proceso hijo. Usa la salida stderr/stdout para diagnóstico.",
+                            stdout = string.IsNullOrWhiteSpace(stdout) ? null : stdout.Trim(),
+                            stderr = string.IsNullOrWhiteSpace(stderr) ? null : stderr.Trim(),
+                        });
+                        return 125;
+                    }
+
+                    // Si el hijo ya imprimió JSON, reenviarlo tal cual.
+                    if (!string.IsNullOrWhiteSpace(stdout))
+                    {
+                        Console.WriteLine(stdout.TrimEnd());
+                        return p.ExitCode;
+                    }
+
+                    JsonOut.Print(new
+                    {
+                        ok = false,
+                        stage = "isolate",
+                        error = "El subproceso no devolvió salida",
+                        exitCode = p.ExitCode,
+                        stderr = string.IsNullOrWhiteSpace(stderr) ? null : stderr.Trim(),
+                    });
+                    return p.ExitCode != 0 ? p.ExitCode : 124;
+                }
+                catch (Exception ex)
+                {
+                    JsonOut.Print(new { ok = false, stage = "isolate", error = ex.Message, type = ex.GetType().FullName });
+                    return 127;
+                }
+            }
+        }
+
         var dllPath = Args.GetStr(opt, "dll");
         if (string.IsNullOrWhiteSpace(dllPath))
         {
