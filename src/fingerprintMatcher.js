@@ -1118,7 +1118,11 @@ export async function createTemplateFromDevice(
     }
 
     const outBuffer = Buffer.alloc(templateBufferSize);
-    const out = { dwSize: templateBufferSize, pData: outBuffer };
+    // IMPORTANT: usar una instancia real del struct para que la DLL pueda escribir.
+    // Con objetos planos, algunas bindings no actualizan dwSize/pData correctamente.
+    const out = new cached.FTR_DATA();
+    out.dwSize = templateBufferSize;
+    out.pData = outBuffer;
 
     const forceEnrollX =
       String(process.env.FTR_ENROLL_FORCE_X || "").trim() === "1";
