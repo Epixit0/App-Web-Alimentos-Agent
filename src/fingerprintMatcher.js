@@ -1118,9 +1118,9 @@ export async function createTemplateFromDevice(
     }
 
     const outBuffer = Buffer.alloc(templateBufferSize);
-    // IMPORTANT: usar una instancia real del struct para que la DLL pueda escribir.
-    // Con objetos planos, algunas bindings no actualizan dwSize/pData correctamente.
-    const out = new cached.FTR_DATA();
+    // IMPORTANT: reservar memoria nativa para el struct (koffi.struct no siempre es "newable").
+    // Esto le da a la DLL un FTR_DATA* real para escribir dwSize/pData.
+    const out = koffi.alloc(cached.FTR_DATA);
     out.dwSize = templateBufferSize;
     out.pData = outBuffer;
 
