@@ -155,6 +155,16 @@ $scan = "C:\FutronicSDK\ftrScanAPI.dll"
 .\dist-x86\futronic-cli.exe enroll --dll $ftr --probeCapture 1 --probeId 4 --probeId 5 --probeVal 0 --probeVal 1 --probeVal 2 --captureArg2Mode timeout --captureArg2 5000
 ```
 
+### Receta que ya dio señal (201 -> 203)
+
+En tu máquina, `FTRSetParam(4,1)` + `CaptureFrame(arg2=5000)` cambió de `201` a `203`.
+El paso siguiente es hacer loop hasta que devuelva `0` (captura OK) y recién ahí intentar `EnrollX`:
+
+```powershell
+$ftr = "C:\FutronicSDK\FTRAPI.dll"
+.\dist-x86\futronic-cli.exe enroll --dll $ftr --purpose 3 --method enrollx --param 4=1 --captureLoop 1 --captureArg2Mode timeout --captureArg2 5000 --captureLoopMax 80 --captureLoopDelayMs 150 --captureRequireOk 1
+```
+
 - SetParam (puedes repetirlo):
 
 ```powershell

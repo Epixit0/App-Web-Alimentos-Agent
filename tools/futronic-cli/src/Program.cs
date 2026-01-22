@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -314,7 +315,7 @@ internal static class Program
 
         try
         {
-            if (cmd != "enroll")
+            if (cmd != "enroll" && cmd != "capture")
             {
                 JsonOut.Print(new { ok = false, error = $"Comando no soportado: {cmd}" });
                 return 2;
@@ -371,6 +372,7 @@ internal static class Program
                     IntPtr apiHandle = hwnd;
                     IntPtr scanHandle = IntPtr.Zero;
                     object? scanInfo = null;
+                    ftrScanCloseDeviceDelegate? scanClose = null;
 
                     // Modos soportados:
                     // - hwnd: pasar HWND a FTR*.
@@ -414,198 +416,282 @@ internal static class Program
                         }
 
                         // Cerrar al terminar el trabajo.
-                        if (close != null)
-                        {
-                            try { close(scanHandle); } catch { }
-                        }
+                        scanClose = close;
                     }
                     else if (handleMode == "null")
                     {
                         apiHandle = IntPtr.Zero;
                     }
 
-                    var setParamResults = new List<object>();
-                    foreach (var (id, value) in parsedParams)
+                    try
                     {
-                        var sp = Native.FTRSetParam(id, value);
-                        setParamResults.Add(new { id, value, code = sp });
-                    }
 
-                    List<object>? paramsDump = null;
-                    if (dumpParams)
-                    {
-                        paramsDump = new List<object>();
-                        foreach (var id in dumpParamIds)
+                        var setParamResults = new List<object>();
+                        foreach (var (id, value) in parsedParams)
                         {
-                            try
-                            {
-                                var r = Native.FTRGetParam(id, out var v);
-                                paramsDump.Add(new { id, code = r, value = v });
-                            }
-                            catch (Exception ex)
-                            {
-                                paramsDump.Add(new { id, code = -1, error = ex.Message });
-                            }
-                        }
-                    }
-
-                    int capCode = 0;
-                    if (doPreCapture)
-                    {
-                        if (apiRequested == "mt" && mtCapture != null)
-                        {
-                            capCode = mtCapture(apiHandle, captureArg2, mtCaptureArg3);
-                        }
-                        else
-                        {
-                            capCode = Native.FTRCaptureFrame(apiHandle, captureArg2);
-                        }
-                    }
-
-                    int? capCodeMt = null;
-
-                    // Modo probe: probar ids/valores y medir CaptureFrame
-                    if (probeCapture)
-                    {
-                        var probeIdRaw = CollectMultiArgs(args, "--probeId");
-                        var probeValRaw = CollectMultiArgs(args, "--probeVal");
-
-                        var probeIds = probeIdRaw
-                            .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
-                            .Where((n) => n.HasValue)
-                            .Select((n) => n!.Value)
-                            .ToList();
-                        if (!probeIds.Any()) probeIds = new List<int> { 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16 };
-
-                        var probeVals = probeValRaw
-                            .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
-                            .Where((n) => n.HasValue)
-                            .Select((n) => n!.Value)
-                            .ToList();
-                        if (!probeVals.Any()) probeVals = new List<int> { 0, 1, 2, 3, 5, 10 };
-
-                        int arg2 = captureArg2Mode switch
-                        {
-                            "purpose" => purpose,
-                            "timeout" => captureArg2,
-                            _ => captureArg2,
-                        };
-
-                        var originals = new Dictionary<int, int>();
-                        foreach (var id in probeIds)
-                        {
-                            try
-                            {
-                                var gr = Native.FTRGetParam(id, out var gv);
-                                if (gr == 0) originals[id] = gv;
-                            }
-                            catch { }
+                            var sp = Native.FTRSetParam(id, value);
+                            setParamResults.Add(new { id, value, code = sp });
                         }
 
-                        var probeResults = new List<object>();
-                        object? best = null;
-
-                        foreach (var id in probeIds)
+                        List<object>? paramsDump = null;
+                        if (dumpParams)
                         {
-                            foreach (var v in probeVals)
+                            paramsDump = new List<object>();
+                            foreach (var id in dumpParamIds)
                             {
-                                int setR;
-                                try { setR = Native.FTRSetParam(id, v); }
+                                try
+                                {
+                                    var r = Native.FTRGetParam(id, out var v);
+                                    paramsDump.Add(new { id, code = r, value = v });
+                                }
                                 catch (Exception ex)
                                 {
-                                    probeResults.Add(new { id, value = v, setCode = -1, setError = ex.Message });
-                                    continue;
-                                }
-
-                                var captures = new List<int>();
-                                for (int i = 0; i < Math.Max(1, probeOncePerValue); i++)
-                                {
-                                    int cr;
-                                    try { cr = Native.FTRCaptureFrame(apiHandle, arg2); }
-                                    catch { cr = -1; }
-                                    captures.Add(cr);
-                                }
-
-                                var item = new { id, value = v, setCode = setR, capture = captures };
-                                probeResults.Add(item);
-
-                                // señal: cualquier cosa != 201
-                                if (best == null && captures.Any((x) => x != 201))
-                                {
-                                    best = item;
-                                    if (!probeKeep)
-                                    {
-                                        // si no queremos seguir probando, salimos temprano
-                                        goto PROBE_DONE;
-                                    }
+                                    paramsDump.Add(new { id, code = -1, error = ex.Message });
                                 }
                             }
                         }
 
-                    PROBE_DONE:
-                        if (!probeKeep)
+                        int capCode = 0;
+                        if (doPreCapture)
                         {
-                            // restaurar valores originales best-effort
-                            foreach (var kv in originals)
-                            {
-                                try { _ = Native.FTRSetParam(kv.Key, kv.Value); } catch { }
-                            }
-                        }
-
-                        return new CliResult(0, new
-                        {
-                            ok = true,
-                            stage = "probeCapture",
-                            purpose,
-                            hwndMode = useNullHwnd ? "null" : "winforms",
-                            handleMode,
-                            captureArg2Mode,
-                            captureArg2,
-                            arg2Used = arg2,
-                            probeOncePerValue,
-                            probeKeep,
-                            probeIds,
-                            probeVals,
-                            best,
-                            results = probeResults,
-                            setParams = setParamResults,
-                            paramsDump,
-                            scan = scanInfo
-                        });
-                    }
-
-                    // Loop de captura estilo WorkedEx (muchos SDKs requieren capturar antes de Enroll)
-                    var captureHistory = new List<int>();
-                    if (captureLoop)
-                    {
-                        int arg2 = captureArg2Mode switch
-                        {
-                            "purpose" => purpose,
-                            "timeout" => captureArg2,
-                            _ => captureArg2,
-                        };
-
-                        for (int i = 0; i < captureLoopMax; i++)
-                        {
-                            int r;
                             if (apiRequested == "mt" && mtCapture != null)
-                                r = mtCapture(apiHandle, arg2, mtCaptureArg3);
+                            {
+                                capCode = mtCapture(apiHandle, captureArg2, mtCaptureArg3);
+                            }
                             else
-                                r = Native.FTRCaptureFrame(apiHandle, arg2);
-
-                            captureHistory.Add(r);
-                            capCode = r;
-                            if (r == 0) break;
-                            Thread.Sleep(Math.Max(0, captureLoopDelayMs));
+                            {
+                                capCode = Native.FTRCaptureFrame(apiHandle, captureArg2);
+                            }
                         }
 
-                        if (captureRequireOk && (captureHistory.Count == 0 || captureHistory[^1] != 0))
+                        int? capCodeMt = null;
+
+                        // Modo probe: probar ids/valores y medir CaptureFrame
+                        if (probeCapture)
                         {
-                            return new CliResult(15, new
+                            var probeIsolated = Args.GetInt(opt, "probeIsolated", 1) != 0;
+                            var probeIdRaw = CollectMultiArgs(args, "--probeId");
+                            var probeValRaw = CollectMultiArgs(args, "--probeVal");
+
+                            var probeIds = probeIdRaw
+                                .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
+                                .Where((n) => n.HasValue)
+                                .Select((n) => n!.Value)
+                                .ToList();
+                            if (!probeIds.Any()) probeIds = new List<int> { 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16 };
+
+                            var probeVals = probeValRaw
+                                .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
+                                .Where((n) => n.HasValue)
+                                .Select((n) => n!.Value)
+                                .ToList();
+                            if (!probeVals.Any()) probeVals = new List<int> { 0, 1, 2, 3, 5, 10 };
+
+                            int arg2 = captureArg2Mode switch
                             {
-                                ok = false,
-                                stage = "captureLoop",
-                                code = captureHistory.LastOrDefault(),
+                                "purpose" => purpose,
+                                "timeout" => captureArg2,
+                                _ => captureArg2,
+                            };
+
+                            var originals = new Dictionary<int, int>();
+                            foreach (var id in probeIds)
+                            {
+                                try
+                                {
+                                    var gr = Native.FTRGetParam(id, out var gv);
+                                    if (gr == 0) originals[id] = gv;
+                                }
+                                catch { }
+                            }
+
+                            var probeResults = new List<object>();
+                            object? best = null;
+
+                            // Para evitar crashes del DLL (0xC0000005), el probe por defecto corre cada intento
+                            // en un subproceso aislado usando el comando "capture".
+                            string? selfExe = Environment.ProcessPath;
+
+                            foreach (var id in probeIds)
+                            {
+                                foreach (var v in probeVals)
+                                {
+                                    if (probeIsolated)
+                                    {
+                                        if (string.IsNullOrWhiteSpace(selfExe) || !File.Exists(selfExe))
+                                        {
+                                            probeResults.Add(new { id, value = v, error = "No se pudo resolver la ruta del ejecutable actual (Environment.ProcessPath)", probeIsolated });
+                                            continue;
+                                        }
+
+                                        // Construir lista final de params: params del usuario + (id=v) sobreescribiendo.
+                                        var finalParams = new Dictionary<int, int>();
+                                        foreach (var (pid, pval) in parsedParams) finalParams[pid] = pval;
+                                        finalParams[id] = v;
+
+                                        var childArgs = new List<string>
+                                    {
+                                        "capture",
+                                        "--dll", dllPath,
+                                        "--purpose", purpose.ToString(),
+                                        "--handle", handleMode,
+                                        "--captureArg2Mode", captureArg2Mode,
+                                        "--captureArg2", captureArg2.ToString(),
+                                        "--captureRepeat", Math.Max(1, probeOncePerValue).ToString(),
+                                    };
+                                        if (!string.IsNullOrWhiteSpace(scanDllPath))
+                                        {
+                                            childArgs.Add("--scanDll");
+                                            childArgs.Add(scanDllPath!);
+                                        }
+                                        if (useNullHwnd)
+                                        {
+                                            childArgs.Add("--nullHwnd");
+                                            childArgs.Add("1");
+                                        }
+
+                                        foreach (var kv in finalParams.OrderBy(k => k.Key))
+                                        {
+                                            childArgs.Add("--param");
+                                            childArgs.Add($"{kv.Key}={kv.Value}");
+                                        }
+
+                                        var child = RunChildCapture(selfExe, childArgs);
+                                        var captures = child.Captures;
+                                        var item = new
+                                        {
+                                            id,
+                                            value = v,
+                                            probeIsolated,
+                                            setCode = child.SetCodes.TryGetValue(id, out var sc) ? sc : (int?)null,
+                                            capture = captures,
+                                            exitCode = child.ExitCode,
+                                            crashed = child.Crashed,
+                                            childStage = child.Stage,
+                                            childError = child.Error
+                                        };
+                                        probeResults.Add(item);
+
+                                        if (best == null && captures.Any((x) => x != 201))
+                                        {
+                                            best = item;
+                                            if (!probeKeep)
+                                                goto PROBE_DONE;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Modo antiguo (NO recomendado): corre en el mismo proceso. Puede crash-ear.
+                                        int setR;
+                                        try { setR = Native.FTRSetParam(id, v); }
+                                        catch (Exception ex)
+                                        {
+                                            probeResults.Add(new { id, value = v, setCode = -1, setError = ex.Message, probeIsolated });
+                                            continue;
+                                        }
+
+                                        var captures = new List<int>();
+                                        for (int i = 0; i < Math.Max(1, probeOncePerValue); i++)
+                                        {
+                                            int cr;
+                                            try { cr = Native.FTRCaptureFrame(apiHandle, arg2); }
+                                            catch { cr = -1; }
+                                            captures.Add(cr);
+                                        }
+
+                                        var item = new { id, value = v, setCode = setR, capture = captures, probeIsolated };
+                                        probeResults.Add(item);
+
+                                        if (best == null && captures.Any((x) => x != 201))
+                                        {
+                                            best = item;
+                                            if (!probeKeep)
+                                                goto PROBE_DONE;
+                                        }
+                                    }
+
+                                    // señal: cualquier cosa != 201
+                                }
+                            }
+
+                        PROBE_DONE:
+                            if (!probeKeep)
+                            {
+                                // restaurar valores originales best-effort
+                                foreach (var kv in originals)
+                                {
+                                    try { _ = Native.FTRSetParam(kv.Key, kv.Value); } catch { }
+                                }
+                            }
+
+                            return new CliResult(0, new
+                            {
+                                ok = true,
+                                stage = "probeCapture",
+                                purpose,
+                                hwndMode = useNullHwnd ? "null" : "winforms",
+                                handleMode,
+                                captureArg2Mode,
+                                captureArg2,
+                                arg2Used = arg2,
+                                probeOncePerValue,
+                                probeKeep,
+                                probeIds,
+                                probeVals,
+                                best,
+                                results = probeResults,
+                                setParams = setParamResults,
+                                paramsDump,
+                                scan = scanInfo
+                            });
+                        }
+
+                        // Comando capture: solo captura y devuelve códigos (útil para probe aislado)
+                        if (cmd == "capture")
+                        {
+                            int arg2 = captureArg2Mode switch
+                            {
+                                "purpose" => purpose,
+                                "timeout" => captureArg2,
+                                _ => captureArg2,
+                            };
+
+                            var captureRepeat = Args.GetInt(opt, "captureRepeat", 1);
+                            if (captureRepeat < 1) captureRepeat = 1;
+
+                            var codes = new List<int>();
+                            if (captureLoop)
+                            {
+                                for (int i = 0; i < captureLoopMax; i++)
+                                {
+                                    int r;
+                                    if (apiRequested == "mt" && mtCapture != null)
+                                        r = mtCapture(apiHandle, arg2, mtCaptureArg3);
+                                    else
+                                        r = Native.FTRCaptureFrame(apiHandle, arg2);
+
+                                    codes.Add(r);
+                                    if (r == 0) break;
+                                    Thread.Sleep(Math.Max(0, captureLoopDelayMs));
+                                }
+                            }
+                            else
+                            {
+                                for (int i = 0; i < captureRepeat; i++)
+                                {
+                                    int r;
+                                    if (apiRequested == "mt" && mtCapture != null)
+                                        r = mtCapture(apiHandle, arg2, mtCaptureArg3);
+                                    else
+                                        r = Native.FTRCaptureFrame(apiHandle, arg2);
+                                    codes.Add(r);
+                                }
+                            }
+
+                            return new CliResult(0, new
+                            {
+                                ok = true,
+                                stage = "capture",
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
                                 handleMode,
@@ -613,32 +699,103 @@ internal static class Program
                                 apiRequested,
                                 captureArg2Mode,
                                 captureArg2,
-                                captureHistory,
+                                arg2Used = arg2,
+                                codes,
                                 setParams = setParamResults,
                                 paramsDump,
                                 scan = scanInfo
                             });
                         }
-                    }
 
-                    string apiUsed = apiRequested == "mt" ? "mt" : "ftr";
-                    bool fallbackAttempted = false;
-                    int? fallbackCode = null;
-
-                    if (method == "enroll")
-                    {
-                        // MTEnroll no está confirmado en este SDK (dump-exports no lo lista).
-                        var rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
-                        apiUsed = "ftr";
-                        if (rEnroll == 0)
+                        // Loop de captura estilo WorkedEx (muchos SDKs requieren capturar antes de Enroll)
+                        var captureHistory = new List<int>();
+                        if (captureLoop)
                         {
-                            var written = (int)data.dwSize;
-                            if (written > 0 && written <= buf.Length)
+                            int arg2 = captureArg2Mode switch
                             {
-                                var tpl = Convert.ToBase64String(buf, 0, written);
-                                return new CliResult(0, new
+                                "purpose" => purpose,
+                                "timeout" => captureArg2,
+                                _ => captureArg2,
+                            };
+
+                            for (int i = 0; i < captureLoopMax; i++)
+                            {
+                                int r;
+                                if (apiRequested == "mt" && mtCapture != null)
+                                    r = mtCapture(apiHandle, arg2, mtCaptureArg3);
+                                else
+                                    r = Native.FTRCaptureFrame(apiHandle, arg2);
+
+                                captureHistory.Add(r);
+                                capCode = r;
+                                if (r == 0) break;
+                                Thread.Sleep(Math.Max(0, captureLoopDelayMs));
+                            }
+
+                            if (captureRequireOk && (captureHistory.Count == 0 || captureHistory[^1] != 0))
+                            {
+                                return new CliResult(15, new
                                 {
-                                    ok = true,
+                                    ok = false,
+                                    stage = "captureLoop",
+                                    code = captureHistory.LastOrDefault(),
+                                    purpose,
+                                    hwndMode = useNullHwnd ? "null" : "winforms",
+                                    handleMode,
+                                    api = apiRequested,
+                                    apiRequested,
+                                    captureArg2Mode,
+                                    captureArg2,
+                                    captureHistory,
+                                    setParams = setParamResults,
+                                    paramsDump,
+                                    scan = scanInfo
+                                });
+                            }
+                        }
+
+                        string apiUsed = apiRequested == "mt" ? "mt" : "ftr";
+                        bool fallbackAttempted = false;
+                        int? fallbackCode = null;
+
+                        if (method == "enroll")
+                        {
+                            // MTEnroll no está confirmado en este SDK (dump-exports no lo lista).
+                            var rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
+                            apiUsed = "ftr";
+                            if (rEnroll == 0)
+                            {
+                                var written = (int)data.dwSize;
+                                if (written > 0 && written <= buf.Length)
+                                {
+                                    var tpl = Convert.ToBase64String(buf, 0, written);
+                                    return new CliResult(0, new
+                                    {
+                                        ok = true,
+                                        code = 0,
+                                        method = "enroll",
+                                        purpose,
+                                        hwndMode = useNullHwnd ? "null" : "winforms",
+                                        handleMode,
+                                        api = apiUsed,
+                                        apiRequested,
+                                        fallbackAttempted,
+                                        fallbackCode,
+                                        bytes = written,
+                                        templateBase64 = tpl,
+                                        preCaptureCode = capCode,
+                                        preCaptureCodeMt = capCodeMt,
+                                        captureHistory,
+                                        setParams = setParamResults,
+                                        paramsDump,
+                                        scan = scanInfo
+                                    });
+                                }
+
+                                return new CliResult(11, new
+                                {
+                                    ok = false,
+                                    stage = "enroll",
                                     code = 0,
                                     method = "enroll",
                                     purpose,
@@ -648,8 +805,8 @@ internal static class Program
                                     apiRequested,
                                     fallbackAttempted,
                                     fallbackCode,
-                                    bytes = written,
-                                    templateBase64 = tpl,
+                                    error = "dwSize inválido",
+                                    dwSize = data.dwSize,
                                     preCaptureCode = capCode,
                                     preCaptureCodeMt = capCodeMt,
                                     captureHistory,
@@ -659,11 +816,11 @@ internal static class Program
                                 });
                             }
 
-                            return new CliResult(11, new
+                            return new CliResult(12, new
                             {
                                 ok = false,
                                 stage = "enroll",
-                                code = 0,
+                                code = rEnroll,
                                 method = "enroll",
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
@@ -672,8 +829,6 @@ internal static class Program
                                 apiRequested,
                                 fallbackAttempted,
                                 fallbackCode,
-                                error = "dwSize inválido",
-                                dwSize = data.dwSize,
                                 preCaptureCode = capCode,
                                 preCaptureCodeMt = capCodeMt,
                                 captureHistory,
@@ -682,51 +837,54 @@ internal static class Program
                                 scan = scanInfo
                             });
                         }
-
-                        return new CliResult(12, new
-                        {
-                            ok = false,
-                            stage = "enroll",
-                            code = rEnroll,
-                            method = "enroll",
-                            purpose,
-                            hwndMode = useNullHwnd ? "null" : "winforms",
-                            handleMode,
-                            api = apiUsed,
-                            apiRequested,
-                            fallbackAttempted,
-                            fallbackCode,
-                            preCaptureCode = capCode,
-                            preCaptureCodeMt = capCodeMt,
-                            captureHistory,
-                            setParams = setParamResults,
-                            paramsDump,
-                            scan = scanInfo
-                        });
-                    }
-                    else
-                    {
-                        int quality;
-                        int r;
-                        if (apiRequested == "mt" && mtEnrollX != null)
-                        {
-                            r = mtEnrollX(apiHandle, purpose, ref data, out quality, mtEnrollArg5);
-                            apiUsed = "mt";
-                        }
                         else
                         {
-                            r = Native.FTREnrollX(apiHandle, purpose, ref data, out quality);
-                            apiUsed = "ftr";
-                        }
-                        if (r == 0)
-                        {
-                            var written = (int)data.dwSize;
-                            if (written > 0 && written <= buf.Length)
+                            int quality;
+                            int r;
+                            if (apiRequested == "mt" && mtEnrollX != null)
                             {
-                                var tpl = Convert.ToBase64String(buf, 0, written);
-                                return new CliResult(0, new
+                                r = mtEnrollX(apiHandle, purpose, ref data, out quality, mtEnrollArg5);
+                                apiUsed = "mt";
+                            }
+                            else
+                            {
+                                r = Native.FTREnrollX(apiHandle, purpose, ref data, out quality);
+                                apiUsed = "ftr";
+                            }
+                            if (r == 0)
+                            {
+                                var written = (int)data.dwSize;
+                                if (written > 0 && written <= buf.Length)
                                 {
-                                    ok = true,
+                                    var tpl = Convert.ToBase64String(buf, 0, written);
+                                    return new CliResult(0, new
+                                    {
+                                        ok = true,
+                                        code = 0,
+                                        method = "enrollx",
+                                        purpose,
+                                        hwndMode = useNullHwnd ? "null" : "winforms",
+                                        handleMode,
+                                        api = apiUsed,
+                                        apiRequested,
+                                        fallbackAttempted,
+                                        fallbackCode,
+                                        quality,
+                                        bytes = written,
+                                        templateBase64 = tpl,
+                                        preCaptureCode = capCode,
+                                        preCaptureCodeMt = capCodeMt,
+                                        captureHistory,
+                                        setParams = setParamResults,
+                                        paramsDump,
+                                        scan = scanInfo
+                                    });
+                                }
+
+                                return new CliResult(11, new
+                                {
+                                    ok = false,
+                                    stage = "enroll",
                                     code = 0,
                                     method = "enrollx",
                                     purpose,
@@ -737,8 +895,8 @@ internal static class Program
                                     fallbackAttempted,
                                     fallbackCode,
                                     quality,
-                                    bytes = written,
-                                    templateBase64 = tpl,
+                                    error = "dwSize inválido",
+                                    dwSize = data.dwSize,
                                     preCaptureCode = capCode,
                                     preCaptureCodeMt = capCodeMt,
                                     captureHistory,
@@ -748,11 +906,11 @@ internal static class Program
                                 });
                             }
 
-                            return new CliResult(11, new
+                            return new CliResult(12, new
                             {
                                 ok = false,
                                 stage = "enroll",
-                                code = 0,
+                                code = r,
                                 method = "enrollx",
                                 purpose,
                                 hwndMode = useNullHwnd ? "null" : "winforms",
@@ -762,8 +920,6 @@ internal static class Program
                                 fallbackAttempted,
                                 fallbackCode,
                                 quality,
-                                error = "dwSize inválido",
-                                dwSize = data.dwSize,
                                 preCaptureCode = capCode,
                                 preCaptureCodeMt = capCodeMt,
                                 captureHistory,
@@ -772,28 +928,13 @@ internal static class Program
                                 scan = scanInfo
                             });
                         }
-
-                        return new CliResult(12, new
+                    }
+                    finally
+                    {
+                        if (scanHandle != IntPtr.Zero && scanClose != null)
                         {
-                            ok = false,
-                            stage = "enroll",
-                            code = r,
-                            method = "enrollx",
-                            purpose,
-                            hwndMode = useNullHwnd ? "null" : "winforms",
-                            handleMode,
-                            api = apiUsed,
-                            apiRequested,
-                            fallbackAttempted,
-                            fallbackCode,
-                            quality,
-                            preCaptureCode = capCode,
-                            preCaptureCodeMt = capCodeMt,
-                            captureHistory,
-                            setParams = setParamResults,
-                            paramsDump,
-                            scan = scanInfo
-                        });
+                            try { scanClose(scanHandle); } catch { }
+                        }
                     }
                 });
 
@@ -877,5 +1018,102 @@ internal static class Program
             list.Add((id, value));
         }
         return list;
+    }
+
+    private sealed record ChildCaptureResult(
+        int ExitCode,
+        bool Crashed,
+        string? Stage,
+        string? Error,
+        List<int> Captures,
+        Dictionary<int, int> SetCodes
+    );
+
+    private static ChildCaptureResult RunChildCapture(string selfExe, List<string> childArgs)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = selfExe,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+
+            foreach (var a in childArgs)
+                psi.ArgumentList.Add(a);
+
+            using var p = Process.Start(psi);
+            if (p == null)
+            {
+                return new ChildCaptureResult(127, false, "spawn", "No se pudo iniciar el proceso hijo", new List<int>(), new Dictionary<int, int>());
+            }
+
+            var stdout = p.StandardOutput.ReadToEnd();
+            var stderr = p.StandardError.ReadToEnd();
+            p.WaitForExit();
+
+            // En Windows, access violation suele ser 3221225477 (0xC0000005)
+            var crashed = p.ExitCode == unchecked((int)0xC0000005);
+
+            // Intentar parsear JSON de salida
+            List<int> codes = new();
+            string? stage = null;
+            string? error = null;
+            var setCodes = new Dictionary<int, int>();
+
+            if (!string.IsNullOrWhiteSpace(stdout))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(stdout.Trim());
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("stage", out var st) && st.ValueKind == JsonValueKind.String)
+                        stage = st.GetString();
+                    if (root.TryGetProperty("error", out var er) && er.ValueKind == JsonValueKind.String)
+                        error = er.GetString();
+                    if (root.TryGetProperty("codes", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var el in arr.EnumerateArray())
+                            if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var n))
+                                codes.Add(n);
+                    }
+                    else if (root.TryGetProperty("code", out var codeEl) && codeEl.ValueKind == JsonValueKind.Number && codeEl.TryGetInt32(out var one))
+                    {
+                        codes.Add(one);
+                    }
+
+                    if (root.TryGetProperty("setParams", out var sp) && sp.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in sp.EnumerateArray())
+                        {
+                            if (item.ValueKind != JsonValueKind.Object) continue;
+                            if (item.TryGetProperty("id", out var idEl) && idEl.TryGetInt32(out var id) &&
+                                item.TryGetProperty("code", out var cEl) && cEl.TryGetInt32(out var c))
+                            {
+                                setCodes[id] = c;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Si no es JSON, dejamos error por stderr/stdout.
+                }
+            }
+
+            if (codes.Count == 0 && crashed)
+                error ??= "Proceso hijo crash (0xC0000005)";
+            if (codes.Count == 0 && !string.IsNullOrWhiteSpace(stderr))
+                error ??= stderr.Trim();
+
+            return new ChildCaptureResult(p.ExitCode, crashed, stage, error, codes, setCodes);
+        }
+        catch (Exception ex)
+        {
+            return new ChildCaptureResult(127, false, "spawn", ex.Message, new List<int>(), new Dictionary<int, int>());
+        }
     }
 }
