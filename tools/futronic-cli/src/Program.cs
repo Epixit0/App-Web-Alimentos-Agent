@@ -460,6 +460,8 @@ internal static class Program
             var frameBufSize = Args.GetInt(opt, "frameBuf", 153600);
             var frameTries = Args.GetInt(opt, "frameTries", 10);
             var frameWaitMs = Args.GetInt(opt, "frameWaitMs", 150);
+            var frameCopy = Args.GetInt(opt, "frameCopy", 0) != 0;
+            var scanCallConv = (Args.GetStr(opt, "scanCallConv") ?? "stdcall").Trim().ToLowerInvariant();
 
             var probeCapture = Args.GetInt(opt, "probeCapture", 0) != 0;
             var probeKeep = Args.GetInt(opt, "probeKeep", 0) != 0;
@@ -577,14 +579,28 @@ internal static class Program
                         // Esto NO depende de FTRCaptureFrame ni de MT*.
                         if (cmd == "scanframe")
                         {
-                            var getFrame = TryGetProc<ftrScanGetFrameDelegate>(scanModule, "ftrScanGetFrame")
-                                           ?? TryGetProc<ftrScanGetFrameDelegate>(scanModule, "FTRScanGetFrame")
-                                           ?? TryGetProc<ftrScanGetFrameDelegate>(IntPtr.Zero, "ftrScanGetFrame")
-                                           ?? TryGetProc<ftrScanGetFrameDelegate>(IntPtr.Zero, "FTRScanGetFrame");
+                            var getFrameStd = TryGetProc<ftrScanGetFrameStdCallDelegate>(scanModule, "ftrScanGetFrame")
+                                              ?? TryGetProc<ftrScanGetFrameStdCallDelegate>(scanModule, "FTRScanGetFrame")
+                                              ?? TryGetProc<ftrScanGetFrameStdCallDelegate>(IntPtr.Zero, "ftrScanGetFrame")
+                                              ?? TryGetProc<ftrScanGetFrameStdCallDelegate>(IntPtr.Zero, "FTRScanGetFrame");
 
-                            if (getFrame == null)
+                            var getFrameCdecl = TryGetProc<ftrScanGetFrameCdeclDelegate>(scanModule, "ftrScanGetFrame")
+                                                ?? TryGetProc<ftrScanGetFrameCdeclDelegate>(scanModule, "FTRScanGetFrame")
+                                                ?? TryGetProc<ftrScanGetFrameCdeclDelegate>(IntPtr.Zero, "ftrScanGetFrame")
+                                                ?? TryGetProc<ftrScanGetFrameCdeclDelegate>(IntPtr.Zero, "FTRScanGetFrame");
+
+                            if (getFrameStd == null && getFrameCdecl == null)
                             {
                                 return new CliResult(14, new { ok = false, stage = "scanFrame", error = "No se encontró ftrScanGetFrame (revisa tu SDK/driver)", scan = scanInfo });
+                            }
+
+                            int InvokeGetFrame(IntPtr dev, IntPtr buf, ref FTRSCAN_FRAME_PARAMETERS p)
+                            {
+                                // Nota: si la convención es incorrecta, puede haber corrupción de stack.
+                                // Por eso existe --scanCallConv y siempre se recomienda usar --isolate 1.
+                                return scanCallConv == "cdecl"
+                                    ? (getFrameCdecl != null ? getFrameCdecl(dev, buf, ref p) : 0)
+                                    : (getFrameStd != null ? getFrameStd(dev, buf, ref p) : 0);
                             }
 
                             var bufferSize = frameBufSize;
@@ -612,7 +628,7 @@ internal static class Program
                                     int r;
                                     try
                                     {
-                                        r = getFrame(scanHandle, unmanaged, ref p);
+                                        r = InvokeGetFrame(scanHandle, unmanaged, ref p);
                                     }
                                     catch (Exception ex)
                                     {
@@ -626,15 +642,38 @@ internal static class Program
 
                                     string? imageB64 = null;
                                     int copySize = 0;
-                                    if (okFrame)
+                                    string? copyWarning = null;
+                                    string? copyError = null;
+                                    if (okFrame && frameCopy)
                                     {
-                                        // Usar nImageSize si viene, sino el buffer total.
-                                        copySize = p.nImageSize > 0 ? Math.Min(p.nImageSize, bufferSize) : bufferSize;
-                                        if (copySize > 0 && copySize <= bufferSize)
+                                        // Validación dura de tamaños antes de copiar: evita AV si el callconv es incorrecto.
+                                        // Preferimos derivar tamaño por width*height cuando sea posible.
+                                        long inferred = (p.nWidth > 0 && p.nHeight > 0) ? (long)p.nWidth * (long)p.nHeight : 0;
+                                        long desired = p.nImageSize > 0 ? p.nImageSize : (inferred > 0 ? inferred : 0);
+
+                                        if (desired <= 0)
                                         {
-                                            var managed = new byte[copySize];
-                                            Marshal.Copy(unmanaged, managed, 0, copySize);
-                                            imageB64 = Convert.ToBase64String(managed);
+                                            copyWarning = "No se pudo inferir tamaño de imagen (nImageSize y width/height inválidos).";
+                                        }
+                                        else if (desired > bufferSize)
+                                        {
+                                            copyWarning = $"Tamaño reportado ({desired}) excede buffer ({bufferSize}); no se copia.";
+                                        }
+                                        else
+                                        {
+                                            copySize = (int)desired;
+                                            try
+                                            {
+                                                var managed = new byte[copySize];
+                                                Marshal.Copy(unmanaged, managed, 0, copySize);
+                                                imageB64 = Convert.ToBase64String(managed);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                copyError = ex.Message;
+                                                imageB64 = null;
+                                                copySize = 0;
+                                            }
                                         }
                                     }
 
@@ -647,12 +686,16 @@ internal static class Program
                                         height = p.nHeight,
                                         imageSize = p.nImageSize,
                                         resolution = p.nResolution,
+                                        scanCallConv,
+                                        frameCopy,
                                         copied = copySize,
+                                        copyWarning,
+                                        copyError,
                                         imageB64
                                     });
 
                                     // Si ya obtuvimos un frame con datos, salir.
-                                    if (okFrame && imageB64 != null)
+                                    if (okFrame && (!frameCopy || imageB64 != null))
                                         break;
 
                                     PumpDelay(frameWaitMs);
@@ -1438,7 +1481,10 @@ internal static class Program
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int ftrScanGetFrameDelegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
+    private delegate int ftrScanGetFrameStdCallDelegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int ftrScanGetFrameCdeclDelegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int ftrScanGetLastErrorDelegate();
