@@ -274,6 +274,32 @@ internal static class Program
             }
         }
 
+        // Comando peexports: no requiere --dll ni cargar DLLs.
+        if (cmd == "peexports")
+        {
+            var pePath = Args.GetStr(opt, "pe");
+            var filter = Args.GetStr(opt, "filter");
+            var max = Args.GetInt(opt, "max", 2000);
+
+            if (string.IsNullOrWhiteSpace(pePath) || !File.Exists(pePath))
+            {
+                JsonOut.Print(new { ok = false, stage = "peexports", error = "Falta --pe o no existe", pe = pePath });
+                return 2;
+            }
+
+            try
+            {
+                var info = PeExports.Read(pePath, filter, max);
+                JsonOut.Print(new { ok = true, stage = "peexports", pe = pePath, arch = info.Arch, exports = info.Exports });
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                JsonOut.Print(new { ok = false, stage = "peexports", pe = pePath, error = ex.Message, type = ex.GetType().FullName });
+                return 13;
+            }
+        }
+
         var dllPath = Args.GetStr(opt, "dll");
         if (string.IsNullOrWhiteSpace(dllPath))
         {
@@ -435,36 +461,10 @@ internal static class Program
 
         try
         {
-            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe" && cmd != "scanframe" && cmd != "peexports")
+            if (cmd != "enroll" && cmd != "capture" && cmd != "mtinit" && cmd != "mtinit-probe" && cmd != "scanframe")
             {
                 JsonOut.Print(new { ok = false, error = $"Comando no soportado: {cmd}" });
                 return 2;
-            }
-
-            // Comando peexports: no requiere cargar DLLs ni inicializar SDK.
-            if (cmd == "peexports")
-            {
-                var pePath = Args.GetStr(opt, "pe") ?? dllPath;
-                var filter = Args.GetStr(opt, "filter");
-                var max = Args.GetInt(opt, "max", 2000);
-
-                if (string.IsNullOrWhiteSpace(pePath) || !File.Exists(pePath))
-                {
-                    JsonOut.Print(new { ok = false, stage = "peexports", error = "No existe --pe", pe = pePath });
-                    return 2;
-                }
-
-                try
-                {
-                    var info = PeExports.Read(pePath, filter, max);
-                    JsonOut.Print(new { ok = true, stage = "peexports", pe = pePath, arch = info.Arch, exports = info.Exports });
-                    return 0;
-                }
-                catch (Exception ex)
-                {
-                    JsonOut.Print(new { ok = false, stage = "peexports", pe = pePath, error = ex.Message, type = ex.GetType().FullName });
-                    return 13;
-                }
             }
 
             var purpose = Args.GetInt(opt, "purpose", 3);
