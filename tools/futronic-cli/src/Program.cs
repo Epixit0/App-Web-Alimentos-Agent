@@ -347,7 +347,10 @@ internal static class Program
                         ?? TryGetProc<ftrScanCloseDeviceDelegate>(scanModuleOnly, "FTRScanCloseDevice");
 
             var getImageSize = TryGetProc<ftrScanGetImageSizeDelegate>(scanModuleOnly, "ftrScanGetImageSize");
+            var getImage = TryGetProc<ftrScanGetImageDelegate>(scanModuleOnly, "ftrScanGetImage");
             var getImage2 = TryGetProc<ftrScanGetImage2Delegate>(scanModuleOnly, "ftrScanGetImage2");
+            var scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModuleOnly, "ftrScanIsFingerPresent");
+            var getLastErrStd = TryGetProc<ftrScanGetLastErrorDelegate>(scanModuleOnly, "ftrScanGetLastError");
             var getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModuleOnly, "ftrScanGetLastError");
 
             if (open == null || close == null)
@@ -355,14 +358,15 @@ internal static class Program
                 JsonOut.Print(new { ok = false, stage = "scanImage", error = "No se encontró ftrScanOpenDevice/ftrScanCloseDevice", scanDll = scanDllPathOnly });
                 return 14;
             }
-            if (getImageSize == null || getImage2 == null)
+            if (getImageSize == null || (getImage2 == null && getImage == null))
             {
                 JsonOut.Print(new
                 {
                     ok = false,
                     stage = "scanImage",
-                    error = "No se encontró ftrScanGetImageSize o ftrScanGetImage2 (revisa exports)",
+                    error = "No se encontró ftrScanGetImageSize o ftrScanGetImage/ftrScanGetImage2 (revisa exports)",
                     hasGetImageSize = getImageSize != null,
+                    hasGetImage = getImage != null,
                     hasGetImage2 = getImage2 != null,
                     scanDll = scanDllPathOnly
                 });
@@ -373,6 +377,7 @@ internal static class Program
             var waitMs = Args.GetInt(opt, "waitMs", 200);
             var bufSizeOverride = Args.GetInt(opt, "buf", 0);
             var copy = Args.GetInt(opt, "copy", 0) != 0;
+            var method = (Args.GetStr(opt, "method") ?? "auto").Trim().ToLowerInvariant();
 
             IntPtr dev = IntPtr.Zero;
             try
@@ -380,9 +385,11 @@ internal static class Program
                 dev = open();
                 if (dev == IntPtr.Zero)
                 {
-                    int? le = null;
-                    try { if (getLastErrCdecl != null) le = getLastErrCdecl(); } catch { }
-                    JsonOut.Print(new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", scanDll = scanDllPathOnly, lastError = le });
+                    int? leStd = null;
+                    int? leCdecl = null;
+                    try { if (getLastErrStd != null) leStd = getLastErrStd(); } catch { }
+                    try { if (getLastErrCdecl != null) leCdecl = getLastErrCdecl(); } catch { }
+                    JsonOut.Print(new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", scanDll = scanDllPathOnly, lastErrorStd = leStd, lastErrorCdecl = leCdecl });
                     return 14;
                 }
 
@@ -391,9 +398,13 @@ internal static class Program
                 {
                     var p = new FTRSCAN_FRAME_PARAMETERS { nWidth = 0, nHeight = 0, nImageSize = 0, nResolution = 0 };
                     int rSize;
-                    int? leSize = null;
+                    int? leSizeStd = null;
+                    int? leSizeCdecl = null;
+                    int? fingerPresent = null;
                     try { rSize = getImageSize(dev, ref p); } catch { rSize = -9999; }
-                    try { if (getLastErrCdecl != null) leSize = getLastErrCdecl(); } catch { }
+                    try { if (scanIsFingerPresent != null) { _ = scanIsFingerPresent(dev, out var present); fingerPresent = present; } } catch { }
+                    try { if (getLastErrStd != null) leSizeStd = getLastErrStd(); } catch { }
+                    try { if (getLastErrCdecl != null) leSizeCdecl = getLastErrCdecl(); } catch { }
 
                     int bufferSize;
                     if (bufSizeOverride > 0) bufferSize = bufSizeOverride;
@@ -403,7 +414,9 @@ internal static class Program
 
                     IntPtr unmanaged = IntPtr.Zero;
                     int rImg;
-                    int? leImg = null;
+                    int? leImgStd = null;
+                    int? leImgCdecl = null;
+                    string api = "";
                     int copied = 0;
                     string? imageB64 = null;
                     string? copyWarning = null;
@@ -412,8 +425,40 @@ internal static class Program
                     try
                     {
                         unmanaged = Marshal.AllocHGlobal(bufferSize);
-                        rImg = getImage2(dev, unmanaged, ref p);
-                        try { if (getLastErrCdecl != null) leImg = getLastErrCdecl(); } catch { }
+                        // Elegir método determinista.
+                        // En este SDK ambas tienen 3 args (stdcall 12), pero a veces una de las variantes funciona y la otra no.
+                        if (method == "getimage" && getImage != null)
+                        {
+                            api = "ftrScanGetImage";
+                            rImg = getImage(dev, unmanaged, ref p);
+                        }
+                        else if (method == "getimage2" && getImage2 != null)
+                        {
+                            api = "ftrScanGetImage2";
+                            rImg = getImage2(dev, unmanaged, ref p);
+                        }
+                        else
+                        {
+                            // auto: probar getImage2 primero (más nuevo) y si falla, getImage.
+                            if (getImage2 != null)
+                            {
+                                api = "ftrScanGetImage2";
+                                rImg = getImage2(dev, unmanaged, ref p);
+                                if (rImg == 0 && getImage != null)
+                                {
+                                    api = "ftrScanGetImage";
+                                    rImg = getImage(dev, unmanaged, ref p);
+                                }
+                            }
+                            else
+                            {
+                                api = "ftrScanGetImage";
+                                rImg = getImage!(dev, unmanaged, ref p);
+                            }
+                        }
+
+                        try { if (getLastErrStd != null) leImgStd = getLastErrStd(); } catch { }
+                        try { if (getLastErrCdecl != null) leImgCdecl = getLastErrCdecl(); } catch { }
 
                         if (copy && rImg != 0)
                         {
@@ -447,9 +492,14 @@ internal static class Program
                     {
                         i,
                         rSize,
-                        lastErrorSize = leSize,
+                        fingerPresent,
+                        lastErrorSizeStd = leSizeStd,
+                        lastErrorSizeCdecl = leSizeCdecl,
                         rImg,
-                        lastErrorImg = leImg,
+                        api,
+                        method,
+                        lastErrorImgStd = leImgStd,
+                        lastErrorImgCdecl = leImgCdecl,
                         width = p.nWidth,
                         height = p.nHeight,
                         imageSize = p.nImageSize,
@@ -1726,6 +1776,9 @@ internal static class Program
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int ftrScanGetImageSizeDelegate(IntPtr device, ref FTRSCAN_FRAME_PARAMETERS pParams);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ftrScanGetImageDelegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int ftrScanGetImage2Delegate(IntPtr device, IntPtr pBuffer, ref FTRSCAN_FRAME_PARAMETERS pParams);
