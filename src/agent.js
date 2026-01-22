@@ -782,6 +782,35 @@ async function capture(job) {
         }
       }
 
+      // Warm-up: mantener el lector activo y asegurar que el frame tenga datos.
+      // Con 1 solo intento a veces devuelve un frame vacío (todo ceros) sin que el
+      // usuario perciba que el lector se encendió.
+      const warmupAttemptsRaw = Number(process.env.FTR_WARMUP_ATTEMPTS || 8);
+      const warmupAttempts =
+        Number.isFinite(warmupAttemptsRaw) && warmupAttemptsRaw > 0
+          ? Math.min(warmupAttemptsRaw, 20)
+          : 8;
+
+      let warm = null;
+      for (let i = 0; i < warmupAttempts; i += 1) {
+        warm = await scanner.captureFingerprint(1, 153600);
+        if (warm && warm.length > 0 && warm.some((b) => b !== 0)) break;
+        // pequeña pausa para que el usuario pueda colocar el dedo
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
+      if (!warm || warm.length === 0) {
+        throw new Error(
+          "No se pudo capturar un frame inicial (warm-up) antes de generar template. Verifica que el lector responda.",
+        );
+      }
+
+      if (!warm.some((b) => b !== 0)) {
+        throw new Error(
+          "El lector devolvió frames vacíos (todo ceros). Asegúrate de poner el dedo y que el lector se encienda.",
+        );
+      }
+
       if (debug) {
         console.log(`[DEBUG] warm-up ok: bytes=${warm.length} nonZero=true`);
       }
