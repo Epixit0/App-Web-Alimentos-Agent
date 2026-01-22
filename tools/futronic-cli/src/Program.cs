@@ -186,21 +186,40 @@ internal static class Program
         var oldCwd = Environment.CurrentDirectory;
         Environment.CurrentDirectory = dllDir;
 
-        // Asegurar que se cargue EXACTAMENTE este FTRAPI.dll (por ruta completa).
+        var noLoadLibrary = Args.GetInt(opt, "noLoadLibrary", 0) != 0;
+
+        // Preferimos cargar por ruta completa para evitar que el proceso termine usando otra copia en PATH,
+        // pero permitimos desactivar esto para diagnosticar.
         Native.SetDllDirectoryA(dllDir);
-        var hMod = Native.LoadLibraryW(dllPath);
-        if (hMod == IntPtr.Zero)
+        if (!noLoadLibrary)
         {
-            var err = Marshal.GetLastWin32Error();
-            JsonOut.Print(new { ok = false, stage = "loadLibrary", error = "No se pudo cargar FTRAPI.dll", dll = dllPath, dllDir, win32 = err });
-            Environment.CurrentDirectory = oldCwd;
-            return 9;
+            var hMod = Native.LoadLibraryW(dllPath);
+            if (hMod == IntPtr.Zero)
+            {
+                var err = Marshal.GetLastWin32Error();
+                JsonOut.Print(new
+                {
+                    ok = false,
+                    stage = "loadLibrary",
+                    error = "No se pudo cargar FTRAPI.dll",
+                    dll = dllPath,
+                    dllDir,
+                    win32 = err,
+                    is64Process = Environment.Is64BitProcess,
+                    is64OS = Environment.Is64BitOperatingSystem,
+                    hint = err == 193
+                        ? "win32=193 suele ser mismatch x86/x64. Publica win-x86 o usa un FTRAPI.dll x64. Puedes probar --noLoadLibrary 1 para fallback."
+                        : null
+                });
+                Environment.CurrentDirectory = oldCwd;
+                return 9;
+            }
         }
 
         var init = Native.FTRInitialize();
         if (init != 0)
         {
-            JsonOut.Print(new { ok = false, stage = "init", code = init });
+            JsonOut.Print(new { ok = false, stage = "init", code = init, is64Process = Environment.Is64BitProcess, is64OS = Environment.Is64BitOperatingSystem });
             Environment.CurrentDirectory = oldCwd;
             return 10;
         }

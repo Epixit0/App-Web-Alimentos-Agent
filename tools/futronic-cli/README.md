@@ -17,6 +17,12 @@ Desde esta carpeta:
  dotnet publish -c Release -r win-x64 /p:PublishSingleFile=true
 ```
 
+Si tu SDK es **x86 (32-bit)**, publica así:
+
+```powershell
+dotnet publish -c Release -r win-x86 /p:PublishSingleFile=true
+```
+
 Si quieres evitar rutas largas y asegurar dónde queda el exe, usa `-o`:
 
 ```powershell
@@ -49,6 +55,30 @@ $ftr = "C:\FutronicSDK\FTRAPI.dll"
 ```
 
 Nota: el CLI ajusta `CurrentDirectory` al folder de `--dll` y hace `LoadLibrary` por ruta completa para reducir problemas de dependencias.
+
+### Error `win32=193`
+
+Si ves:
+
+- `{"stage":"loadLibrary", "win32":193, ...}`
+
+normalmente es **mismatch x86/x64** (por ejemplo, exe x64 intentando cargar `FTRAPI.dll` x86).
+
+Opciones:
+
+1. Publica el exe en `win-x86` y vuelve a intentar.
+
+2. Ubica un `FTRAPI.dll` x64 (a veces está en otra carpeta del SDK) y apunta `--dll` a ese:
+
+```powershell
+Get-ChildItem -Recurse C:\FutronicSDK -Filter FTRAPI.dll | Select-Object -ExpandProperty FullName
+```
+
+3. Solo para diagnosticar (fallback al comportamiento sin forzar ruta completa):
+
+```powershell
+.\dist\futronic-cli.exe enroll --dll $ftr --purpose 3 --noLoadLibrary 1
+```
 
 ## Opciones útiles (debug)
 
