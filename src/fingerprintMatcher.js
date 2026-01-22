@@ -1366,9 +1366,9 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   }
 
   const probe = { dwSize: probeBuf.length, pData: probeBuf };
-  // Importante: inicializar en -1 para evitar que 0 (match) sea el valor por defecto
-  // si la DLL no llega a escribir el resultado por algún motivo.
-  const matchedIndex = [-1];
+  // Importante: inicializar en 1 para indicar que hay 1 template base.
+  // La DLL usa esto como IN/OUT param: IN=num_templates, OUT=match_index.
+  const matchedIndex = [1];
   const score = [0];
 
   const identifyResult = cached.FTRIdentify(
