@@ -495,6 +495,47 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 }
 
 async function capture(jobType) {
+  const enrollProvider = String(
+    process.env.FTR_ENROLL_PROVIDER || "native",
+  ).trim();
+
+  // Opción estable: usar un ejecutable externo (C#/.NET) para hablar con Futronic.
+  // Esto evita FFI frágil en Node y replica mejor un flujo tipo WorkedEx.
+  if (
+    enrollProvider === "cli" &&
+    (jobType === "enroll" || jobType === "verify")
+  ) {
+    const exePath = String(process.env.FTR_CLI_EXE || "").trim();
+    const dllPath = String(process.env.FTRAPI_DLL_PATH || "").trim();
+    const purpose = String(process.env.FTR_ENROLL_PURPOSE || "3").trim();
+    if (!exePath)
+      throw new Error(
+        "FTR_ENROLL_PROVIDER=cli pero falta FTR_CLI_EXE (ruta al futronic-cli.exe)",
+      );
+    if (!dllPath)
+      throw new Error(
+        "FTR_ENROLL_PROVIDER=cli pero falta FTRAPI_DLL_PATH (ruta a FTRAPI.dll)",
+      );
+
+    try {
+      const out = execFileSync(
+        exePath,
+        ["enroll", "--dll", dllPath, "--purpose", purpose],
+        { encoding: "utf8", windowsHide: true, timeout: 120_000 },
+      );
+      const parsed = JSON.parse(out);
+      if (!parsed?.ok || typeof parsed?.templateBase64 !== "string") {
+        const code = parsed?.code;
+        throw new Error(
+          `futronic-cli falló: stage=${parsed?.stage || "?"} code=${code} error=${parsed?.error || "?"}`,
+        );
+      }
+      return Buffer.from(parsed.templateBase64, "base64");
+    } catch (e) {
+      throw new Error(e?.message || String(e));
+    }
+  }
+
   const useScanApi = String(process.env.FTR_USE_SCANAPI || "1").trim() !== "0";
   const scanApiCaptureFrames =
     String(process.env.FTR_SCANAPI_CAPTURE_FRAMES || "1").trim() !== "0";
