@@ -297,7 +297,9 @@ internal static class Program
         {
             var asm = typeof(Program).Assembly;
             var ver = asm.GetName().Version?.ToString();
-            var loc = asm.Location;
+            // En single-file publish, Assembly.Location puede ser "" (IL3000).
+            // Para ubicar el directorio del exe, usar AppContext.BaseDirectory.
+            var loc = System.AppContext.BaseDirectory;
             JsonOut.Print(new
             {
                 ok = true,
@@ -544,6 +546,206 @@ internal static class Program
                     try { close(dev); } catch { }
                 }
             }
+        }
+
+        // Comando scanframe (standalone): captura de frame vía ftrScanGetFrame usando SOLO ftrScanAPI.dll.
+        // Requiere: --scanDll C:\FutronicSDK\ftrScanAPI.dll
+        // Opcionales:
+        //   --frameBuf 153600 --frameTries 10 --frameWaitMs 150 --frameCopy 1
+        //   --scanCallConv stdcall|cdecl  (default stdcall)
+        //   --visible 1  (por si el driver/SKD necesita ventana visible)
+        if (cmd == "scanframe")
+        {
+            var scanDllPathOnly = Args.GetStr(opt, "scanDll");
+            if (string.IsNullOrWhiteSpace(scanDllPathOnly) || !File.Exists(scanDllPathOnly))
+            {
+                JsonOut.Print(new { ok = false, stage = "scanFrame", error = "Falta --scanDll o no existe", scanDll = scanDllPathOnly });
+                return 2;
+            }
+
+            var scanDir = Path.GetDirectoryName(scanDllPathOnly);
+            if (!string.IsNullOrWhiteSpace(scanDir))
+            {
+                Native.SetDllDirectoryA(scanDir);
+                try { Environment.CurrentDirectory = scanDir; } catch { }
+            }
+
+            var frameBufSize = Args.GetInt(opt, "frameBuf", 153600);
+            var frameTries = Args.GetInt(opt, "frameTries", 10);
+            var frameWaitMs = Args.GetInt(opt, "frameWaitMs", 150);
+            var frameCopy = Args.GetInt(opt, "frameCopy", 0) != 0;
+            var scanCallConv = (Args.GetStr(opt, "scanCallConv") ?? "stdcall").Trim().ToLowerInvariant();
+            var diag = Args.GetInt(opt, "diag", 0) != 0;
+            var visible = Args.GetInt(opt, "visible", 0) != 0;
+
+            var result = WinFormsLoop.RunOnUiThread(_hwnd =>
+            {
+                IntPtr scanModuleOnly = Native.LoadLibraryW(scanDllPathOnly);
+                if (scanModuleOnly == IntPtr.Zero)
+                {
+                    var err = Marshal.GetLastWin32Error();
+                    return new CliResult(9, new { ok = false, stage = "loadLibrary", error = "No se pudo cargar ftrScanAPI.dll", scanDll = scanDllPathOnly, win32 = err, is64Process = Environment.Is64BitProcess });
+                }
+
+                var open = TryGetProc<ftrScanOpenDeviceDelegate>(scanModuleOnly, "ftrScanOpenDevice")
+                           ?? TryGetProc<ftrScanOpenDeviceDelegate>(scanModuleOnly, "FTRScanOpenDevice");
+                var close = TryGetProc<ftrScanCloseDeviceDelegate>(scanModuleOnly, "ftrScanCloseDevice")
+                            ?? TryGetProc<ftrScanCloseDeviceDelegate>(scanModuleOnly, "FTRScanCloseDevice");
+
+                var getFrameStd = TryGetProc<ftrScanGetFrameStdCallDelegate>(scanModuleOnly, "ftrScanGetFrame")
+                                  ?? TryGetProc<ftrScanGetFrameStdCallDelegate>(scanModuleOnly, "FTRScanGetFrame");
+                var getFrameCdecl = TryGetProc<ftrScanGetFrameCdeclDelegate>(scanModuleOnly, "ftrScanGetFrame")
+                                    ?? TryGetProc<ftrScanGetFrameCdeclDelegate>(scanModuleOnly, "FTRScanGetFrame");
+
+                ftrScanIsFingerPresentDelegate? scanIsFingerPresent = null;
+                ftrScanGetLastErrorDelegate? getLastErrStd = null;
+                ftrScanGetLastErrorCdeclDelegate? getLastErrCdecl = null;
+                if (diag)
+                {
+                    // OJO: estas funciones han causado crashes por mismatch en algunas builds.
+                    scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModuleOnly, "ftrScanIsFingerPresent");
+                    getLastErrStd = TryGetProc<ftrScanGetLastErrorDelegate>(scanModuleOnly, "ftrScanGetLastError");
+                    getLastErrCdecl = TryGetProc<ftrScanGetLastErrorCdeclDelegate>(scanModuleOnly, "ftrScanGetLastError");
+                }
+
+                if (open == null || close == null)
+                    return new CliResult(14, new { ok = false, stage = "scanFrame", error = "No se encontró ftrScanOpenDevice/ftrScanCloseDevice", scanDll = scanDllPathOnly });
+                if (getFrameStd == null && getFrameCdecl == null)
+                    return new CliResult(14, new { ok = false, stage = "scanFrame", error = "No se encontró ftrScanGetFrame (revisa exports)", hasStdcall = getFrameStd != null, hasCdecl = getFrameCdecl != null, scanDll = scanDllPathOnly });
+
+                int InvokeGetFrame(IntPtr dev, IntPtr buf, ref FTRSCAN_FRAME_PARAMETERS p)
+                {
+                    return scanCallConv == "cdecl"
+                        ? (getFrameCdecl != null ? getFrameCdecl(dev, buf, ref p) : 0)
+                        : (getFrameStd != null ? getFrameStd(dev, buf, ref p) : 0);
+                }
+
+                IntPtr dev = IntPtr.Zero;
+                try
+                {
+                    dev = open();
+                    if (dev == IntPtr.Zero)
+                    {
+                        int? leStd = null;
+                        int? leCdecl = null;
+                        if (diag)
+                        {
+                            try { if (getLastErrStd != null) leStd = getLastErrStd(); } catch { }
+                            try { if (getLastErrCdecl != null) leCdecl = getLastErrCdecl(); } catch { }
+                        }
+                        return new CliResult(14, new { ok = false, stage = "scanOpen", error = "ftrScanOpenDevice devolvió NULL", scanDll = scanDllPathOnly, lastErrorStd = leStd, lastErrorCdecl = leCdecl });
+                    }
+
+                    int bufferSize = frameBufSize < 1024 ? 153600 : frameBufSize;
+                    int tries = Math.Max(1, frameTries);
+
+                    IntPtr unmanaged = IntPtr.Zero;
+                    try
+                    {
+                        unmanaged = Marshal.AllocHGlobal(bufferSize);
+                        for (int i = 0; i < Math.Min(bufferSize, 4096); i++) Marshal.WriteByte(unmanaged, i, 0);
+
+                        var frames = new List<object>();
+                        for (int i = 0; i < tries; i++)
+                        {
+                            var p = new FTRSCAN_FRAME_PARAMETERS { nWidth = 0, nHeight = 0, nImageSize = 0, nResolution = 0 };
+                            int r;
+                            try { r = InvokeGetFrame(dev, unmanaged, ref p); }
+                            catch (Exception ex)
+                            {
+                                frames.Add(new { i, ok = false, stage = "scanFrame", error = ex.Message, type = ex.GetType().FullName });
+                                PumpDelay(frameWaitMs);
+                                continue;
+                            }
+
+                            int? fingerPresent = null;
+                            int? leStd = null;
+                            int? leCdecl = null;
+                            if (diag)
+                            {
+                                try { if (scanIsFingerPresent != null) { _ = scanIsFingerPresent(dev, out var present); fingerPresent = present; } } catch { }
+                                try { if (getLastErrStd != null) leStd = getLastErrStd(); } catch { }
+                                try { if (getLastErrCdecl != null) leCdecl = getLastErrCdecl(); } catch { }
+                            }
+
+                            var okFrame = r != 0;
+                            string? imageB64 = null;
+                            int copied = 0;
+                            string? copyWarning = null;
+                            string? copyError = null;
+
+                            if (okFrame && frameCopy)
+                            {
+                                long inferred = (p.nWidth > 0 && p.nHeight > 0) ? (long)p.nWidth * (long)p.nHeight : 0;
+                                long desired = p.nImageSize > 0 ? p.nImageSize : (inferred > 0 ? inferred : 0);
+                                if (desired <= 0)
+                                    copyWarning = "No se pudo inferir tamaño de imagen (nImageSize y width/height inválidos).";
+                                else if (desired > bufferSize)
+                                    copyWarning = $"Tamaño reportado ({desired}) excede buffer ({bufferSize}); no se copia.";
+                                else
+                                {
+                                    copied = (int)desired;
+                                    try
+                                    {
+                                        var managed = new byte[copied];
+                                        Marshal.Copy(unmanaged, managed, 0, copied);
+                                        imageB64 = Convert.ToBase64String(managed);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        copyError = ex.Message;
+                                        imageB64 = null;
+                                        copied = 0;
+                                    }
+                                }
+                            }
+
+                            frames.Add(new
+                            {
+                                i,
+                                ok = okFrame,
+                                code = r,
+                                width = p.nWidth,
+                                height = p.nHeight,
+                                imageSize = p.nImageSize,
+                                resolution = p.nResolution,
+                                scanCallConv,
+                                frameCopy,
+                                bufferSize,
+                                diag,
+                                fingerPresent,
+                                lastErrorStd = leStd,
+                                lastErrorCdecl = leCdecl,
+                                copied,
+                                copyWarning,
+                                copyError,
+                                imageB64
+                            });
+
+                            if (okFrame && (!frameCopy || imageB64 != null))
+                                break;
+
+                            PumpDelay(frameWaitMs);
+                        }
+
+                        return new CliResult(0, new { ok = true, stage = "scanFrame", scanDll = scanDllPathOnly, frames });
+                    }
+                    finally
+                    {
+                        if (unmanaged != IntPtr.Zero) Marshal.FreeHGlobal(unmanaged);
+                    }
+                }
+                finally
+                {
+                    if (dev != IntPtr.Zero)
+                    {
+                        try { close(dev); } catch { }
+                    }
+                }
+            }, visible);
+
+            JsonOut.Print(result.Payload);
+            return result.ExitCode;
         }
 
         // Comando peexports: no requiere --dll ni cargar DLLs.
