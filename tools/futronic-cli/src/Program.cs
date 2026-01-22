@@ -309,6 +309,8 @@ internal static class Program
         var mtEnrollArg5 = Args.GetInt(opt, "mtEnrollArg5", 0);
         var mtUseInitArgForCtx = Args.GetInt(opt, "mtUseInitArgForCtx", 1) != 0;
 
+        bool mtInitArgExplicit = opt.ContainsKey("mtInitArg");
+        bool mtTermArgExplicit = opt.ContainsKey("mtTermArg");
         bool mtCaptureArg3Explicit = opt.ContainsKey("mtCaptureArg3");
         bool mtEnrollArg5Explicit = opt.ContainsKey("mtEnrollArg5");
 
@@ -384,6 +386,18 @@ internal static class Program
                 // Permitir setear params desde CLI: --param 4=1 --param 5=0
                 var rawParams = CollectMultiArgs(args, "--param", "--setparam");
                 var parsedParams = ParseParams(rawParams);
+
+                // Para mt-scan: lista de intentos para MTInitialize.
+                // Ej: --mtInitTry 0,1,2,3 o repetir: --mtInitTry 0 --mtInitTry 1
+                var mtInitTryRaw = CollectMultiArgs(args, "--mtInitTry");
+                var mtInitTry = new List<int>();
+                foreach (var token in mtInitTryRaw)
+                {
+                    foreach (var part in token.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        if (int.TryParse(part, out var n)) mtInitTry.Add(n);
+                    }
+                }
 
                 // Permitir especificar qué ids dumpear: --dumpParamId 4 --dumpParamId 5
                 var dumpParamIdRaw = CollectMultiArgs(args, "--dumpParamId");
@@ -473,29 +487,58 @@ internal static class Program
                                 return new CliResult(10, new { ok = false, stage = "mtInit", error = "Se pidió --api mt-scan pero no hay exports MT*", hasMt, apiRequested });
                             }
 
-                            // Por defecto: usar scanHandle como argumento de MTInitialize (x86 => cabe en int).
-                            // Si quieres forzar otro valor, usa --mtInitArg.
-                            if (mtInitArg == 0)
+                            // CRÍTICO: NO usar scanHandle como mtInitArg. Eso puede causar 0xC0000005.
+                            // En este SDK, MTInitialize parece requerir un identificador pequeño (0/1/2...).
+                            var candidates = new List<int>();
+                            if (mtInitArgExplicit)
+                                candidates.Add(mtInitArg);
+                            else if (mtInitTry.Count > 0)
+                                candidates.AddRange(mtInitTry);
+                            else
+                                candidates.AddRange(new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 });
+
+                            var attempts = new List<object>();
+                            int selectedArg = int.MinValue;
+                            int selectedCode = int.MinValue;
+
+                            foreach (var candidate in candidates.Distinct())
                             {
-                                mtInitArg = unchecked((int)scanHandle.ToInt64());
+                                int r;
+                                try
+                                {
+                                    r = mtInit!(candidate);
+                                }
+                                catch (Exception ex)
+                                {
+                                    attempts.Add(new { mtInitArg = candidate, code = -1, error = ex.Message, type = ex.GetType().FullName });
+                                    continue;
+                                }
+
+                                attempts.Add(new { mtInitArg = candidate, code = r });
+                                if (r == 0)
+                                {
+                                    selectedArg = candidate;
+                                    selectedCode = r;
+                                    break;
+                                }
                             }
 
-                            int r;
-                            try
+                            mtInitDeferredCode = selectedCode;
+                            if (selectedCode != 0)
                             {
-                                r = mtInit!(mtInitArg);
-                            }
-                            catch (Exception ex)
-                            {
-                                return new CliResult(10, new { ok = false, stage = "mtInit", error = ex.Message, type = ex.GetType().FullName, mtInitArg });
+                                return new CliResult(10, new
+                                {
+                                    ok = false,
+                                    stage = "mtInit",
+                                    error = "MTInitialize no devolvió 0 con los candidatos probados",
+                                    attempts,
+                                    apiRequested
+                                });
                             }
 
-                            mtInitDeferredCode = r;
-                            if (r != 0)
-                            {
-                                return new CliResult(10, new { ok = false, stage = "mtInit", code = r, mtInitArg, apiRequested });
-                            }
                             mtInitialized = true;
+                            mtInitArg = selectedArg;
+                            if (!mtTermArgExplicit) mtTermArg = mtInitArg;
 
                             if (mtUseInitArgForCtx)
                             {
@@ -552,7 +595,7 @@ internal static class Program
                         int capCode = 0;
                         if (doPreCapture)
                         {
-                            if (apiRequested == "mt" && mtCapture != null)
+                            if ((apiRequested == "mt" || apiRequested == "mt-scan") && mtCapture != null)
                             {
                                 capCode = mtCapture(apiHandle, captureArg2, mtCaptureArg3);
                             }
@@ -790,7 +833,7 @@ internal static class Program
                                     }
 
                                     int r;
-                                    if (apiRequested == "mt" && mtCapture != null)
+                                    if ((apiRequested == "mt" || apiRequested == "mt-scan") && mtCapture != null)
                                         r = mtCapture(apiHandle, arg2, mtCaptureArg3);
                                     else
                                         r = Native.FTRCaptureFrame(apiHandle, arg2);
@@ -811,7 +854,7 @@ internal static class Program
                                 for (int i = 0; i < captureRepeat; i++)
                                 {
                                     int r;
-                                    if (apiRequested == "mt" && mtCapture != null)
+                                    if ((apiRequested == "mt" || apiRequested == "mt-scan") && mtCapture != null)
                                         r = mtCapture(apiHandle, arg2, mtCaptureArg3);
                                     else
                                         r = Native.FTRCaptureFrame(apiHandle, arg2);
@@ -853,7 +896,7 @@ internal static class Program
                             for (int i = 0; i < captureLoopMax; i++)
                             {
                                 int r;
-                                if (apiRequested == "mt" && mtCapture != null)
+                                if ((apiRequested == "mt" || apiRequested == "mt-scan") && mtCapture != null)
                                     r = mtCapture(apiHandle, arg2, mtCaptureArg3);
                                 else
                                     r = Native.FTRCaptureFrame(apiHandle, arg2);
@@ -892,7 +935,7 @@ internal static class Program
                             }
                         }
 
-                        string apiUsed = apiRequested == "mt" ? "mt" : "ftr";
+                        string apiUsed = (apiRequested == "mt" || apiRequested == "mt-scan") ? "mt" : "ftr";
                         bool fallbackAttempted = false;
                         int? fallbackCode = null;
 
@@ -979,7 +1022,7 @@ internal static class Program
                         {
                             int quality;
                             int r;
-                            if (apiRequested == "mt" && mtEnrollX != null)
+                            if ((apiRequested == "mt" || apiRequested == "mt-scan") && mtEnrollX != null)
                             {
                                 r = mtEnrollX(apiHandle, purpose, ref data, out quality, mtEnrollArg5);
                                 apiUsed = "mt";
