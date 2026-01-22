@@ -664,7 +664,9 @@ async function capture(job) {
       // para evitar reusar un template viejo.
       const tolRaw = Number(process.env.FTR_TML_MIN_MTIME_TOLERANCE_MS || 5000);
       const tolMs =
-        Number.isFinite(tolRaw) && tolRaw >= 0 ? Math.min(tolRaw, 60_000) : 5000;
+        Number.isFinite(tolRaw) && tolRaw >= 0
+          ? Math.min(tolRaw, 60_000)
+          : 5000;
       const minMtime = receivedAtMs - tolMs;
       const started = Date.now();
       for (;;) {
