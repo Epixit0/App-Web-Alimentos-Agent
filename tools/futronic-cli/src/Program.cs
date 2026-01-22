@@ -672,7 +672,7 @@ internal static class Program
 
                                     codes.Add(r);
                                     if (r == 0) break;
-                                    Thread.Sleep(Math.Max(0, captureLoopDelayMs));
+                                    PumpDelay(Math.Max(0, captureLoopDelayMs));
                                 }
                             }
                             else
@@ -729,7 +729,7 @@ internal static class Program
                                 captureHistory.Add(r);
                                 capCode = r;
                                 if (r == 0) break;
-                                Thread.Sleep(Math.Max(0, captureLoopDelayMs));
+                                PumpDelay(Math.Max(0, captureLoopDelayMs));
                             }
 
                             if (captureRequireOk && (captureHistory.Count == 0 || captureHistory[^1] != 0))
@@ -1018,6 +1018,32 @@ internal static class Program
             list.Add((id, value));
         }
         return list;
+    }
+
+    private static void PumpDelay(int delayMs)
+    {
+        try
+        {
+            // Si el SDK depende de mensajes Windows, dormir el hilo UI rompe el flujo.
+            // Esto mantiene el message loop vivo mientras esperamos.
+            if (delayMs <= 0)
+            {
+                Application.DoEvents();
+                return;
+            }
+
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < delayMs)
+            {
+                Application.DoEvents();
+                Thread.Sleep(10);
+            }
+        }
+        catch
+        {
+            // Fallback best-effort
+            Thread.Sleep(Math.Max(0, delayMs));
+        }
     }
 
     private sealed record ChildCaptureResult(
