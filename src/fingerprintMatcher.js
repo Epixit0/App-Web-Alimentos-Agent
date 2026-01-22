@@ -223,6 +223,25 @@ function loadMatcher() {
       ]),
   );
 
+  const captureFrame = resolveFunction(
+    lib,
+    "FTRCaptureFrame",
+    [
+      "FTRCaptureFrame",
+      "FTR_CaptureFrame",
+      "FTRCaptureFrameA",
+      "FTR_CaptureFrameA",
+      "_FTRCaptureFrame@8",
+      "FTRCaptureFrame@8",
+      "_FTR_CaptureFrame@8",
+      "FTR_CaptureFrame@8",
+    ],
+    (loadedLib, name) =>
+      // Por dump actual: stdcallArgBytes=8 (2 args).
+      // No hay headers, pero lo más probable es (handle, purpose/timeout).
+      loadedLib.func("__stdcall", name, "int", ["void *", "int"]),
+  );
+
   // Algunos SDKs exportan también las funciones de escaneo dentro de FTRAPI.dll.
   // Esto nos permite abrir un handle compatible con FTREnroll en caso de que el handle
   // proveniente de ftrScanAPI.dll no sea aceptado por FTREnroll.
@@ -374,6 +393,7 @@ function loadMatcher() {
     FTRTerminate: terminate?.fn || null,
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
+    FTRCaptureFrame: captureFrame?.fn || null,
     FTREnroll: enroll?.fn || null,
     FTREnrollX: enrollXPtr?.fn || null,
     FTREnrollX_Int: enrollXInt?.fn || null,
@@ -384,6 +404,7 @@ function loadMatcher() {
       FTRTerminate: terminate?.name || null,
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
+      FTRCaptureFrame: captureFrame?.name || null,
       FTREnroll: enroll?.name || null,
       FTREnrollX: enrollXPtr?.name || null,
       ftrScanOpenDevice: scanOpen?.name || null,
@@ -493,6 +514,33 @@ export async function createTemplateFromDevice(
         await options.preCapture();
       } catch {
         // ignore
+      }
+    }
+
+    // Algunos builds (como WorkedEx) parecen operar sin ftrScanAPI.dll.
+    // En esos casos, FTREnroll/FTREnrollX pueden requerir que la captura se haga
+    // vía FTRAPI.dll para poblar estado interno.
+    const tryCaptureFrame =
+      String(process.env.FTR_TRY_CAPTUREFRAME || "1").trim() === "1";
+    if (tryCaptureFrame && cached.FTRCaptureFrame) {
+      try {
+        const capHandle =
+          String(process.env.FTR_CAPTUREFRAME_TRY_NULL_HANDLE || "0").trim() ===
+          "1"
+            ? null
+            : handle;
+        const capResult = cached.FTRCaptureFrame(capHandle, purposeValue);
+        if (debug) {
+          console.log(
+            `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) purpose=${purposeValue} result=${capResult}`,
+          );
+        }
+      } catch (e) {
+        if (debug) {
+          console.log(
+            `[DEBUG] FTRCaptureFrame lanzó error: ${e?.message || String(e)}`,
+          );
+        }
       }
     }
 

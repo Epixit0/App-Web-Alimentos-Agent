@@ -273,7 +273,10 @@ function parseImports(buf) {
         const intOff = rvaToFileOffset(sections, intRva);
         if (intOff != null) {
           const funcs = parseThunkList(intOff, 4, false);
-          addImport(dllName ? `${dllName} (delay)` : "<unknown> (delay)", funcs);
+          addImport(
+            dllName ? `${dllName} (delay)` : "<unknown> (delay)",
+            funcs,
+          );
         } else {
           addImport(dllName ? `${dllName} (delay)` : "<unknown> (delay)", []);
         }
