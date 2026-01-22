@@ -860,12 +860,24 @@ export async function createTemplateFromDevice(
         const requireOk =
           String(process.env.FTR_CAPTUREFRAME_REQUIRE_OK || "1").trim() !== "0";
 
+        const capArg2Mode = String(
+          process.env.FTR_CAPTUREFRAME_ARG2_MODE || "timeout",
+        ).trim();
+        const timeoutRaw = Number(
+          process.env.FTR_CAPTUREFRAME_TIMEOUT_MS || 5000,
+        );
+        const timeoutMs =
+          Number.isFinite(timeoutRaw) && timeoutRaw > 0
+            ? Math.min(timeoutRaw, 60_000)
+            : 5000;
+        const capArg2 = capArg2Mode === "purpose" ? purposeValue : timeoutMs;
+
         let capResult = null;
         for (let i = 0; i <= capRetries; i += 1) {
-          capResult = cached.FTRCaptureFrame(capHandle, purposeValue);
+          capResult = cached.FTRCaptureFrame(capHandle, capArg2);
           if (debug) {
             console.log(
-              `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) purpose=${purposeValue} try=${i + 1}/${capRetries + 1} result=${capResult}`,
+              `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) arg2=${capArg2} mode=${capArg2Mode} try=${i + 1}/${capRetries + 1} result=${capResult}`,
             );
           }
 

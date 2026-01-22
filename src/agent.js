@@ -495,8 +495,7 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 }
 
 async function capture(jobType) {
-  const useScanApi =
-    String(process.env.FTR_USE_SCANAPI || "1").trim() !== "0";
+  const useScanApi = String(process.env.FTR_USE_SCANAPI || "1").trim() !== "0";
 
   // Modo estilo WorkedEx: no abrir ftrScanAPI.dll para evitar que el dispositivo quede
   // tomado por el driver de escaneo cuando FTRAPI.dll intenta capturar/enrolar.
