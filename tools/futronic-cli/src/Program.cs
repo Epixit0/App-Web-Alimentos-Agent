@@ -184,6 +184,7 @@ internal static class Program
         var opt = Args.Parse(args.Skip(1).ToArray());
 
         var visible = Args.GetInt(opt, "visible", 0) != 0;
+        var scanDiagnostics = Args.GetInt(opt, "scanDiagnostics", 0) != 0;
 
         var dllPath = Args.GetStr(opt, "dll");
         if (string.IsNullOrWhiteSpace(dllPath))
@@ -413,28 +414,36 @@ internal static class Program
                         }
 
                         scanHandle = open();
-                        // Diagnóstico scan API
-                        var scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModule, "ftrScanIsFingerPresent");
-                        var scanGetLastError = TryGetProc<ftrScanGetLastErrorDelegate>(scanModule, "ftrScanGetLastError");
-
-                        int? fingerPresent = null;
-                        int? scanLastError = null;
-                        if (scanHandle != IntPtr.Zero && scanIsFingerPresent != null)
+                        // Nota: algunas combinaciones de SDK/driver pueden devolver handles que no son seguros
+                        // para usar con otras funciones ftrScan* (provocando 0xC0000005). Por eso, el diagnóstico
+                        // de scan API está desactivado por defecto y solo se activa con --scanDiagnostics 1.
+                        if (scanDiagnostics)
                         {
-                            try
+                            var scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModule, "ftrScanIsFingerPresent");
+                            var scanGetLastError = TryGetProc<ftrScanGetLastErrorDelegate>(scanModule, "ftrScanGetLastError");
+
+                            int? fingerPresent = null;
+                            int? scanLastError = null;
+                            if (scanHandle != IntPtr.Zero && scanIsFingerPresent != null)
                             {
-                                var r = scanIsFingerPresent(scanHandle, out var present);
-                                // Si r != 0 no sabemos el contrato exacto, pero igual reportamos.
-                                fingerPresent = present;
+                                try
+                                {
+                                    _ = scanIsFingerPresent(scanHandle, out var present);
+                                    fingerPresent = present;
+                                }
+                                catch { }
                             }
-                            catch { }
-                        }
-                        if (scanGetLastError != null)
-                        {
-                            try { scanLastError = scanGetLastError(); } catch { }
-                        }
+                            if (scanGetLastError != null)
+                            {
+                                try { scanLastError = scanGetLastError(); } catch { }
+                            }
 
-                        scanInfo = new { handleMode, scanHandle = scanHandle.ToInt64(), scanDll = scanDllPath, fingerPresent, scanLastError };
+                            scanInfo = new { handleMode, scanHandle = scanHandle.ToInt64(), scanDll = scanDllPath, fingerPresent, scanLastError };
+                        }
+                        else
+                        {
+                            scanInfo = new { handleMode, scanHandle = scanHandle.ToInt64(), scanDll = scanDllPath };
+                        }
 
                         if (scanHandle == IntPtr.Zero)
                         {
@@ -695,29 +704,35 @@ internal static class Program
                             if (captureRepeat < 1) captureRepeat = 1;
 
                             var codes = new List<int>();
-                            var fingerHistory = new List<int?>();
+                            List<int?>? fingerHistory = null;
                             ftrScanIsFingerPresentDelegate? scanIsFingerPresent = null;
-                            if (scanHandle != IntPtr.Zero)
+                            if (scanDiagnostics && scanHandle != IntPtr.Zero)
+                            {
+                                fingerHistory = new List<int?>();
                                 scanIsFingerPresent = TryGetProc<ftrScanIsFingerPresentDelegate>(scanModule, "ftrScanIsFingerPresent");
+                            }
                             if (captureLoop)
                             {
                                 for (int i = 0; i < captureLoopMax; i++)
                                 {
-                                    if (scanHandle != IntPtr.Zero && scanIsFingerPresent != null)
+                                    if (fingerHistory != null)
                                     {
-                                        try
+                                        if (scanHandle != IntPtr.Zero && scanIsFingerPresent != null)
                                         {
-                                            _ = scanIsFingerPresent(scanHandle, out var present);
-                                            fingerHistory.Add(present);
+                                            try
+                                            {
+                                                _ = scanIsFingerPresent(scanHandle, out var present);
+                                                fingerHistory.Add(present);
+                                            }
+                                            catch
+                                            {
+                                                fingerHistory.Add(null);
+                                            }
                                         }
-                                        catch
+                                        else
                                         {
                                             fingerHistory.Add(null);
                                         }
-                                    }
-                                    else
-                                    {
-                                        fingerHistory.Add(null);
                                     }
 
                                     int r;
