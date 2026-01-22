@@ -1395,7 +1395,8 @@ export async function verifyTemplate(baseTemplate, probeTemplate) {
   }
 
   if (identifyResult !== 0 && identifyNResult !== 0) {
-    const used = identifyNResult == null ? "FTRIdentify" : "FTRIdentify+FTRIdentifyN";
+    const used =
+      identifyNResult == null ? "FTRIdentify" : "FTRIdentify+FTRIdentifyN";
     return {
       matched: false,
       error:
