@@ -369,49 +369,27 @@ async function listTemplates(runtime, params) {
 }
 
 function decodeTemplateFromApi(item) {
-  const b64 =
-    item?.templateBase64 || item?.templateBase64Gzip || item?.template || null;
-  if (typeof b64 !== "string" || !b64) return null;
-
-  const debug =
-    String(process.env.FINGERPRINT_AGENT_DEBUG_TEMPLATE_DECODE || "").trim() ===
-    "1";
-
-  let buf;
-  try {
-    buf = Buffer.from(b64, "base64");
-  } catch {
+  // El API ahora debe enviar el template en Base64 puro, sin comprimir.
+  // El campo puede ser 'template' (legacy) o 'templateBase64'.
+  const b64 = item?.templateBase64 || item?.template || null;
+  if (typeof b64 !== "string" || !b64) {
     return null;
   }
 
-  if (!Buffer.isBuffer(buf) || buf.length === 0) return null;
-
-  // Si es gzip, intentamos descomprimir. Si falla, devolvemos el buffer crudo
-  // para que el matcher pueda reportar un error explícito (en vez de saltar silenciosamente).
-  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
-    try {
-      const out = zlib.gunzipSync(buf);
-      if (debug) {
-        console.log(
-          `[DEBUG] template decode: gzip ok raw=${buf.length} bytes -> tpl=${out.length} bytes`,
-        );
-      }
-      return out;
-    } catch (e) {
-      if (debug) {
-        console.log(
-          `[DEBUG] template decode: gzip FAIL raw=${buf.length} bytes err=${e?.message || String(e)}`,
-        );
-      }
+  try {
+    const buf = Buffer.from(b64, "base64");
+    if (buf.length > 0) {
+      // Log para confirmar que el buffer se decodificó correctamente
+      console.log(`[INFO] Template decodificado: ${buf.length} bytes`);
       return buf;
     }
+    return null;
+  } catch (e) {
+    console.error(
+      `[ERROR] Falló la decodificación del template Base64: ${e.message}`,
+    );
+    return null;
   }
-
-  if (debug) {
-    console.log(`[DEBUG] template decode: raw=${buf.length} bytes (no gzip)`);
-  }
-
-  return buf;
 }
 
 async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
@@ -744,43 +722,6 @@ async function capture(job) {
     console.log(
       `[DEBUG] capture start: jobType=${jobType || "?"} provider=${enrollProvider || "?"}`,
     );
-  }
-
-  // Opción estable: usar un ejecutable externo (C#/.NET) para hablar con Futronic.
-  // Esto evita FFI frágil en Node y replica mejor un flujo tipo WorkedEx.
-  if (
-    enrollProvider === "cli" &&
-    (jobType === "enroll" || jobType === "verify" || jobType === "identify")
-  ) {
-    const exePath = String(process.env.FTR_CLI_EXE || "").trim();
-    const dllPath = String(process.env.FTRAPI_DLL_PATH || "").trim();
-    const purpose = String(process.env.FTR_ENROLL_PURPOSE || "3").trim();
-    if (!exePath)
-      throw new Error(
-        "FTR_ENROLL_PROVIDER=cli pero falta FTR_CLI_EXE (ruta al futronic-cli.exe)",
-      );
-    if (!dllPath)
-      throw new Error(
-        "FTR_ENROLL_PROVIDER=cli pero falta FTRAPI_DLL_PATH (ruta a FTRAPI.dll)",
-      );
-
-    try {
-      const out = execFileSync(
-        exePath,
-        ["enroll", "--dll", dllPath, "--purpose", purpose],
-        { encoding: "utf8", windowsHide: true, timeout: 120_000 },
-      );
-      const parsed = JSON.parse(out);
-      if (!parsed?.ok || typeof parsed?.templateBase64 !== "string") {
-        const code = parsed?.code;
-        throw new Error(
-          `futronic-cli falló: stage=${parsed?.stage || "?"} code=${code} error=${parsed?.error || "?"}`,
-        );
-      }
-      return Buffer.from(parsed.templateBase64, "base64");
-    } catch (e) {
-      throw new Error(e?.message || String(e));
-    }
   }
 
   const useScanApi = String(process.env.FTR_USE_SCANAPI || "1").trim() !== "0";
