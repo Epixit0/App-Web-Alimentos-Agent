@@ -289,7 +289,7 @@ function loadMatcher() {
       loadedLib.func("__stdcall", name, "int", ["void *", "int", "FTR_DATA *"]),
   );
 
-  const enrollX = resolveFunction(
+  const enrollXPtr = resolveFunction(
     lib,
     "FTREnrollX",
     [
@@ -304,14 +304,28 @@ function loadMatcher() {
     ],
     (loadedLib, name) =>
       // Según el dump actual: stdcallArgBytes=16 (4 args).
-      // Sin headers, modelamos el 4º argumento como puntero opcional (NULL suele ser aceptable).
+      // En la práctica, este 4º argumento suele ser un puntero de salida (quality/flags).
       loadedLib.func("__stdcall", name, "int", [
         "void *",
         "int",
         "FTR_DATA *",
-        "void *",
+        "int *",
       ]),
   );
+
+  const enrollXInt = enrollXPtr
+    ? {
+        name: enrollXPtr.name,
+        fn: tryDeclare(() =>
+          lib.func("__stdcall", enrollXPtr.name, "int", [
+            "void *",
+            "int",
+            "FTR_DATA *",
+            "int",
+          ]),
+        ),
+      }
+    : null;
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
@@ -361,7 +375,8 @@ function loadMatcher() {
     FTRSetBaseTemplate: setBase?.fn || null,
     FTRIdentify: identify?.fn || null,
     FTREnroll: enroll?.fn || null,
-    FTREnrollX: enrollX?.fn || null,
+    FTREnrollX: enrollXPtr?.fn || null,
+    FTREnrollX_Int: enrollXInt?.fn || null,
     ftrScanOpenDevice: scanOpen?.fn || null,
     ftrScanCloseDevice: scanClose?.fn || null,
     names: {
@@ -370,7 +385,7 @@ function loadMatcher() {
       FTRSetBaseTemplate: setBase?.name || null,
       FTRIdentify: identify?.name || null,
       FTREnroll: enroll?.name || null,
-      FTREnrollX: enrollX?.name || null,
+      FTREnrollX: enrollXPtr?.name || null,
       ftrScanOpenDevice: scanOpen?.name || null,
       ftrScanCloseDevice: scanClose?.name || null,
     },
@@ -493,6 +508,10 @@ export async function createTemplateFromDevice(
     const callEnroll = () =>
       cached.FTREnroll(handle, purposeValue, koffi.as(out, "FTR_DATA *"));
     const callEnrollX = () => {
+      if (!cached.FTREnrollX) {
+        throw new Error("FTREnrollX no está disponible");
+      }
+
       const mode = String(process.env.FTR_ENROLLX_ARG4_MODE || "ptr").trim();
 
       if (mode === "null") {
@@ -505,10 +524,13 @@ export async function createTemplateFromDevice(
       }
 
       if (mode === "int") {
+        if (!cached.FTREnrollX_Int) {
+          throw new Error("FTREnrollX_Int no está disponible");
+        }
         const arg4Raw = process.env.FTR_ENROLLX_ARG4;
         const arg4Num = Number(arg4Raw);
         const arg4 = Number.isFinite(arg4Num) ? arg4Num : 0;
-        return cached.FTREnrollX(
+        return cached.FTREnrollX_Int(
           handle,
           purposeValue,
           koffi.as(out, "FTR_DATA *"),
