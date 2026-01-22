@@ -48,6 +48,8 @@ $ftr = "C:\FutronicSDK\FTRAPI.dll"
 .\dist\futronic-cli.exe enroll --dll $ftr --purpose 3
 ```
 
+Nota: el CLI ajusta `CurrentDirectory` al folder de `--dll` y hace `LoadLibrary` por ruta completa para reducir problemas de dependencias.
+
 ## Opciones útiles (debug)
 
 - Elegir método:

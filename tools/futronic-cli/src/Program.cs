@@ -15,6 +15,9 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
     public static extern bool SetDllDirectoryA(string? lpPathName);
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadLibraryW(string lpFileName);
+
     [DllImport("FTRAPI.dll", CallingConvention = CallingConvention.StdCall)]
     public static extern int FTRInitialize();
 
@@ -165,14 +168,40 @@ internal static class Program
             return 2;
         }
 
+        if (!File.Exists(dllPath))
+        {
+            JsonOut.Print(new { ok = false, stage = "args", error = "No existe el archivo --dll", dll = dllPath });
+            return 2;
+        }
+
         var dllDir = Path.GetDirectoryName(dllPath);
-        if (!string.IsNullOrWhiteSpace(dllDir))
-            Native.SetDllDirectoryA(dllDir);
+        if (string.IsNullOrWhiteSpace(dllDir))
+        {
+            JsonOut.Print(new { ok = false, stage = "args", error = "No se pudo obtener el directorio de --dll", dll = dllPath });
+            return 2;
+        }
+
+        // IMPORTANTÍSIMO: muchos SDKs cargan dependencias relativas al CurrentDirectory.
+        // WorkedEx normalmente corre desde el folder del SDK.
+        var oldCwd = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = dllDir;
+
+        // Asegurar que se cargue EXACTAMENTE este FTRAPI.dll (por ruta completa).
+        Native.SetDllDirectoryA(dllDir);
+        var hMod = Native.LoadLibraryW(dllPath);
+        if (hMod == IntPtr.Zero)
+        {
+            var err = Marshal.GetLastWin32Error();
+            JsonOut.Print(new { ok = false, stage = "loadLibrary", error = "No se pudo cargar FTRAPI.dll", dll = dllPath, dllDir, win32 = err });
+            Environment.CurrentDirectory = oldCwd;
+            return 9;
+        }
 
         var init = Native.FTRInitialize();
         if (init != 0)
         {
             JsonOut.Print(new { ok = false, stage = "init", code = init });
+            Environment.CurrentDirectory = oldCwd;
             return 10;
         }
 
@@ -340,6 +369,8 @@ internal static class Program
         finally
         {
             try { Native.FTRTerminate(); } catch { }
+            try { Environment.CurrentDirectory = oldCwd; } catch { }
+            try { Native.SetDllDirectoryA(null); } catch { }
         }
     }
 
