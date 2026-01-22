@@ -34,6 +34,9 @@ internal static class Native
     public static extern int FTRSetParam(int id, int value);
 
     [DllImport("FTRAPI.dll", CallingConvention = CallingConvention.StdCall)]
+    public static extern int FTRGetParam(int id, out int value);
+
+    [DllImport("FTRAPI.dll", CallingConvention = CallingConvention.StdCall)]
     public static extern int FTRCaptureFrame(IntPtr hWnd, int arg2);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -323,6 +326,14 @@ internal static class Program
             var useNullHwnd = Args.GetInt(opt, "nullHwnd", 0) != 0;
             var method = (Args.GetStr(opt, "method") ?? "enrollx").Trim().ToLowerInvariant();
 
+            // Debug/diagnóstico (para comparar con WorkedEx)
+            var dumpParams = Args.GetInt(opt, "dumpParams", 0) != 0;
+            var captureLoop = Args.GetInt(opt, "captureLoop", 0) != 0;
+            var captureLoopMax = Args.GetInt(opt, "captureLoopMax", 40);
+            var captureLoopDelayMs = Args.GetInt(opt, "captureLoopDelayMs", 150);
+            var captureArg2Mode = (Args.GetStr(opt, "captureArg2Mode") ?? "purpose").Trim().ToLowerInvariant();
+            var captureRequireOk = Args.GetInt(opt, "captureRequireOk", 0) != 0;
+
             var bufSize = Args.GetInt(opt, "buf", 6144);
             var buf = new byte[bufSize];
             var pinned = GCHandle.Alloc(buf, GCHandleType.Pinned);
@@ -338,6 +349,15 @@ internal static class Program
                 // Permitir setear params desde CLI: --param 4=1 --param 5=0
                 var rawParams = CollectMultiArgs(args, "--param", "--setparam");
                 var parsedParams = ParseParams(rawParams);
+
+                // Permitir especificar qué ids dumpear: --dumpParamId 4 --dumpParamId 5
+                var dumpParamIdRaw = CollectMultiArgs(args, "--dumpParamId");
+                var dumpParamIds = dumpParamIdRaw
+                    .Select((s) => int.TryParse(s, out var n) ? (int?)n : null)
+                    .Where((n) => n.HasValue)
+                    .Select((n) => n!.Value)
+                    .ToList();
+                if (!dumpParamIds.Any()) dumpParamIds = Enumerable.Range(0, 21).ToList();
 
                 var result = WinFormsLoop.RunOnUiThread(hwndFromUi =>
                 {
@@ -407,6 +427,24 @@ internal static class Program
                         setParamResults.Add(new { id, value, code = sp });
                     }
 
+                    List<object>? paramsDump = null;
+                    if (dumpParams)
+                    {
+                        paramsDump = new List<object>();
+                        foreach (var id in dumpParamIds)
+                        {
+                            try
+                            {
+                                var r = Native.FTRGetParam(id, out var v);
+                                paramsDump.Add(new { id, code = r, value = v });
+                            }
+                            catch (Exception ex)
+                            {
+                                paramsDump.Add(new { id, code = -1, error = ex.Message });
+                            }
+                        }
+                    }
+
                     int capCode = 0;
                     if (doPreCapture)
                     {
@@ -421,6 +459,53 @@ internal static class Program
                     }
 
                     int? capCodeMt = null;
+
+                    // Loop de captura estilo WorkedEx (muchos SDKs requieren capturar antes de Enroll)
+                    var captureHistory = new List<int>();
+                    if (captureLoop)
+                    {
+                        int arg2 = captureArg2Mode switch
+                        {
+                            "purpose" => purpose,
+                            "timeout" => captureArg2,
+                            _ => captureArg2,
+                        };
+
+                        for (int i = 0; i < captureLoopMax; i++)
+                        {
+                            int r;
+                            if (apiRequested == "mt" && mtCapture != null)
+                                r = mtCapture(apiHandle, arg2, mtCaptureArg3);
+                            else
+                                r = Native.FTRCaptureFrame(apiHandle, arg2);
+
+                            captureHistory.Add(r);
+                            capCode = r;
+                            if (r == 0) break;
+                            Thread.Sleep(Math.Max(0, captureLoopDelayMs));
+                        }
+
+                        if (captureRequireOk && (captureHistory.Count == 0 || captureHistory[^1] != 0))
+                        {
+                            return new CliResult(15, new
+                            {
+                                ok = false,
+                                stage = "captureLoop",
+                                code = captureHistory.LastOrDefault(),
+                                purpose,
+                                hwndMode = useNullHwnd ? "null" : "winforms",
+                                handleMode,
+                                api = apiRequested,
+                                apiRequested,
+                                captureArg2Mode,
+                                captureArg2,
+                                captureHistory,
+                                setParams = setParamResults,
+                                paramsDump,
+                                scan = scanInfo
+                            });
+                        }
+                    }
 
                     string apiUsed = apiRequested == "mt" ? "mt" : "ftr";
                     bool fallbackAttempted = false;
@@ -453,7 +538,9 @@ internal static class Program
                                     templateBase64 = tpl,
                                     preCaptureCode = capCode,
                                     preCaptureCodeMt = capCodeMt,
+                                    captureHistory,
                                     setParams = setParamResults,
+                                    paramsDump,
                                     scan = scanInfo
                                 });
                             }
@@ -475,7 +562,9 @@ internal static class Program
                                 dwSize = data.dwSize,
                                 preCaptureCode = capCode,
                                 preCaptureCodeMt = capCodeMt,
+                                captureHistory,
                                 setParams = setParamResults,
+                                paramsDump,
                                 scan = scanInfo
                             });
                         }
@@ -495,7 +584,9 @@ internal static class Program
                             fallbackCode,
                             preCaptureCode = capCode,
                             preCaptureCodeMt = capCodeMt,
+                            captureHistory,
                             setParams = setParamResults,
+                            paramsDump,
                             scan = scanInfo
                         });
                     }
@@ -536,7 +627,9 @@ internal static class Program
                                     templateBase64 = tpl,
                                     preCaptureCode = capCode,
                                     preCaptureCodeMt = capCodeMt,
+                                    captureHistory,
                                     setParams = setParamResults,
+                                    paramsDump,
                                     scan = scanInfo
                                 });
                             }
@@ -559,7 +652,9 @@ internal static class Program
                                 dwSize = data.dwSize,
                                 preCaptureCode = capCode,
                                 preCaptureCodeMt = capCodeMt,
+                                captureHistory,
                                 setParams = setParamResults,
+                                paramsDump,
                                 scan = scanInfo
                             });
                         }
@@ -580,7 +675,9 @@ internal static class Program
                             quality,
                             preCaptureCode = capCode,
                             preCaptureCodeMt = capCodeMt,
+                            captureHistory,
                             setParams = setParamResults,
+                            paramsDump,
                             scan = scanInfo
                         });
                     }
