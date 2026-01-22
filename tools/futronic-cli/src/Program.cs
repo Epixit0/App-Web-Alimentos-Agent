@@ -260,7 +260,9 @@ internal static class Program
         }
 
         // Opcionalmente usar API MT* si el SDK lo requiere.
-        var api = (Args.GetStr(opt, "api") ?? "auto").Trim().ToLowerInvariant();
+        // Nota: MT* es experimental porque la firma puede variar entre SDKs.
+        // Para evitar crashes por mismatch, NO hacemos fallback automático.
+        var apiRequested = (Args.GetStr(opt, "api") ?? "ftr").Trim().ToLowerInvariant();
 
         var mtInit = TryGetProc<InitDelegate>(ftrModule, "MTInitialize");
         var mtTerm = TryGetProc<TerminateDelegate>(ftrModule, "MTTerminate");
@@ -270,18 +272,21 @@ internal static class Program
 
         var hasMt = mtInit != null && mtTerm != null && (mtEnrollX != null || mtEnroll != null);
 
+        bool mtInitialized = false;
+
         int init;
         string apiInitUsed;
-        if (api == "mt")
+        if (apiRequested == "mt")
         {
             if (!hasMt)
             {
-                JsonOut.Print(new { ok = false, stage = "init", error = "Se pidió --api mt pero no hay exports MT*", hasMt });
+                JsonOut.Print(new { ok = false, stage = "init", error = "Se pidió --api mt pero no hay exports MT*", hasMt, apiRequested });
                 Environment.CurrentDirectory = oldCwd;
                 return 10;
             }
             init = mtInit!();
             apiInitUsed = "mt";
+            mtInitialized = true;
         }
         else
         {
@@ -290,7 +295,7 @@ internal static class Program
         }
         if (init != 0)
         {
-            JsonOut.Print(new { ok = false, stage = "init", code = init, api = apiInitUsed, hasMt, is64Process = Environment.Is64BitProcess, is64OS = Environment.Is64BitOperatingSystem });
+            JsonOut.Print(new { ok = false, stage = "init", code = init, api = apiInitUsed, apiRequested, hasMt, is64Process = Environment.Is64BitProcess, is64OS = Environment.Is64BitOperatingSystem });
             Environment.CurrentDirectory = oldCwd;
             return 10;
         }
@@ -396,7 +401,7 @@ internal static class Program
                     int capCode = 0;
                     if (doPreCapture)
                     {
-                        if (api == "mt" && mtCapture != null)
+                        if (apiRequested == "mt" && mtCapture != null)
                         {
                             capCode = mtCapture(apiHandle, captureArg2);
                         }
@@ -407,19 +412,15 @@ internal static class Program
                     }
 
                     int? capCodeMt = null;
-                    if (api == "auto" && capCode == 201 && mtCapture != null)
-                    {
-                        capCodeMt = mtCapture(apiHandle, captureArg2);
-                    }
 
-                    string apiUsed = api == "mt" ? "mt" : "ftr";
+                    string apiUsed = apiRequested == "mt" ? "mt" : "ftr";
                     bool fallbackAttempted = false;
                     int? fallbackCode = null;
 
                     if (method == "enroll")
                     {
                         int rEnroll;
-                        if (api == "mt" && mtEnroll != null)
+                        if (apiRequested == "mt" && mtEnroll != null)
                         {
                             rEnroll = mtEnroll(apiHandle, purpose, ref data);
                             apiUsed = "mt";
@@ -428,15 +429,6 @@ internal static class Program
                         {
                             rEnroll = Native.FTREnroll(apiHandle, purpose, ref data);
                             apiUsed = "ftr";
-                        }
-
-                        // Fallback: si FTR devuelve 201 y tenemos MT disponible, intentar MT.
-                        if (api == "auto" && rEnroll == 201 && mtEnroll != null)
-                        {
-                            fallbackAttempted = true;
-                            fallbackCode = mtEnroll(apiHandle, purpose, ref data);
-                            rEnroll = fallbackCode.Value;
-                            apiUsed = "mt";
                         }
                         if (rEnroll == 0)
                         {
@@ -453,6 +445,7 @@ internal static class Program
                                     hwndMode = useNullHwnd ? "null" : "winforms",
                                     handleMode,
                                     api = apiUsed,
+                                    apiRequested,
                                     fallbackAttempted,
                                     fallbackCode,
                                     bytes = written,
@@ -474,6 +467,7 @@ internal static class Program
                                 hwndMode = useNullHwnd ? "null" : "winforms",
                                 handleMode,
                                 api = apiUsed,
+                                apiRequested,
                                 fallbackAttempted,
                                 fallbackCode,
                                 error = "dwSize inválido",
@@ -495,6 +489,7 @@ internal static class Program
                             hwndMode = useNullHwnd ? "null" : "winforms",
                             handleMode,
                             api = apiUsed,
+                            apiRequested,
                             fallbackAttempted,
                             fallbackCode,
                             preCaptureCode = capCode,
@@ -507,7 +502,7 @@ internal static class Program
                     {
                         int quality;
                         int r;
-                        if (api == "mt" && mtEnrollX != null)
+                        if (apiRequested == "mt" && mtEnrollX != null)
                         {
                             r = mtEnrollX(apiHandle, purpose, ref data, out quality);
                             apiUsed = "mt";
@@ -516,14 +511,6 @@ internal static class Program
                         {
                             r = Native.FTREnrollX(apiHandle, purpose, ref data, out quality);
                             apiUsed = "ftr";
-                        }
-
-                        if (api == "auto" && r == 201 && mtEnrollX != null)
-                        {
-                            fallbackAttempted = true;
-                            fallbackCode = mtEnrollX(apiHandle, purpose, ref data, out quality);
-                            r = fallbackCode.Value;
-                            apiUsed = "mt";
                         }
                         if (r == 0)
                         {
@@ -540,6 +527,7 @@ internal static class Program
                                     hwndMode = useNullHwnd ? "null" : "winforms",
                                     handleMode,
                                     api = apiUsed,
+                                    apiRequested,
                                     fallbackAttempted,
                                     fallbackCode,
                                     quality,
@@ -562,6 +550,7 @@ internal static class Program
                                 hwndMode = useNullHwnd ? "null" : "winforms",
                                 handleMode,
                                 api = apiUsed,
+                                apiRequested,
                                 fallbackAttempted,
                                 fallbackCode,
                                 quality,
@@ -584,6 +573,7 @@ internal static class Program
                             hwndMode = useNullHwnd ? "null" : "winforms",
                             handleMode,
                             api = apiUsed,
+                            apiRequested,
                             fallbackAttempted,
                             fallbackCode,
                             quality,
@@ -607,7 +597,7 @@ internal static class Program
         {
             try
             {
-                if (api == "mt" && mtTerm != null) mtTerm();
+                if (mtInitialized && mtTerm != null) mtTerm();
                 else Native.FTRTerminate();
             }
             catch { }
