@@ -105,6 +105,8 @@ const FTRSCAN_FRAME_PARAMETERS = nativeDepsAvailable
   : null;
 
 let ftrScanAPI = null;
+let lastLoadedScanDll = null;
+let lastLoadedScanDllName = null;
 
 // En el agente, las DLL deben estar en App-Web-Alimentos-Agent/lib
 const ftrAPIPathDefault = path.join(__dirname, "../lib/FTRAPI.dll");
@@ -207,6 +209,8 @@ function loadScanDLL(dllPath, dllName) {
     };
 
     console.log(`[OK] ${dllName} cargada exitosamente (funciones de escaneo)`);
+    lastLoadedScanDll = dllPath;
+    lastLoadedScanDllName = dllName;
     return library;
   } catch (error) {
     const msg = error?.message || String(error);
@@ -331,15 +335,44 @@ class FingerprintScanner {
         return true;
       }
 
-      this.handle = ftrScanAPI.ftrScanOpenDevice();
+      const retriesRaw = Number(process.env.FTRSCAN_OPEN_RETRIES || 5);
+      const retries =
+        Number.isFinite(retriesRaw) && retriesRaw >= 0
+          ? Math.min(retriesRaw, 20)
+          : 5;
+      const delayRaw = Number(process.env.FTRSCAN_OPEN_DELAY_MS || 300);
+      const delayMs =
+        Number.isFinite(delayRaw) && delayRaw >= 0
+          ? Math.min(delayRaw, 2000)
+          : 300;
+      const debug = String(process.env.DEBUG_FINGERPRINT || "").trim() === "1";
 
-      if (this.isNullHandle(this.handle)) {
-        this.isOpen = false;
-        return false;
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        this.handle = ftrScanAPI.ftrScanOpenDevice();
+        if (!this.isNullHandle(this.handle)) {
+          this.isOpen = true;
+          return true;
+        }
+
+        if (debug) {
+          console.log(
+            `[DEBUG_FINGERPRINT] ftrScanOpenDevice devolvió NULL (try=${attempt + 1}/${retries + 1}) dll=${lastLoadedScanDllName || "?"} path=${lastLoadedScanDll || "?"}`,
+          );
+        }
+
+        if (attempt < retries && delayMs > 0) {
+          // Espera corta: si el device está ocupado por otro proceso, a veces se libera.
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+        }
       }
 
-      this.isOpen = true;
-      return true;
+      this.isOpen = false;
+      if (debug) {
+        console.log(
+          "[DEBUG_FINGERPRINT] No se pudo abrir el dispositivo del escáner (handle NULL). Sugerencias: cerrar WorkedEx/otras instancias del agente, desconectar/reconectar el lector.",
+        );
+      }
+      return false;
     } catch {
       this.isOpen = false;
       return false;
