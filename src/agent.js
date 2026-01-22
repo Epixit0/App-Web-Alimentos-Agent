@@ -584,10 +584,32 @@ function pickLatestTmlFile(dirPath, minMtimeMs = 0) {
       }
       return { full, mtimeMs: st?.mtimeMs ?? 0 };
     })
-    .filter((x) => x.mtimeMs > (Number.isFinite(minMtimeMs) ? minMtimeMs : 0))
+    .filter((x) => x.mtimeMs >= (Number.isFinite(minMtimeMs) ? minMtimeMs : 0))
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   return tml.length ? tml[0].full : null;
+}
+
+function listRecentTmlFiles(dirPath, take = 5) {
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const files = entries
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".tml"))
+      .map((e) => {
+        const full = path.join(dirPath, e.name);
+        let st;
+        try {
+          st = fs.statSync(full);
+        } catch {
+          st = null;
+        }
+        return { name: e.name, full, mtimeMs: st?.mtimeMs ?? 0 };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return files.slice(0, Math.max(0, Math.min(20, Number(take) || 5)));
+  } catch {
+    return [];
+  }
 }
 
 async function capture(job) {
@@ -640,7 +662,10 @@ async function capture(job) {
     } else if (tmlDir && fs.existsSync(tmlDir)) {
       // Esperar un archivo .tml NUEVO (creado/modificado después de que llegó el job)
       // para evitar reusar un template viejo.
-      const minMtime = receivedAtMs - 500; // pequeña tolerancia
+      const tolRaw = Number(process.env.FTR_TML_MIN_MTIME_TOLERANCE_MS || 5000);
+      const tolMs =
+        Number.isFinite(tolRaw) && tolRaw >= 0 ? Math.min(tolRaw, 60_000) : 5000;
+      const minMtime = receivedAtMs - tolMs;
       const started = Date.now();
       for (;;) {
         tmlPath = pickLatestTmlFile(tmlDir, minMtime);
@@ -648,12 +673,33 @@ async function capture(job) {
         if (Date.now() - started >= timeoutMs) break;
         await sleep(waitMs);
       }
+
+      if (!tmlPath && debugCapture) {
+        const recent = listRecentTmlFiles(tmlDir, 8);
+        const recentText = recent
+          .map((f) => `${f.name}@${Math.round(f.mtimeMs)}`)
+          .join(" | ");
+        console.log(
+          `[DEBUG] tml not found yet. dir=${tmlDir} minMtime=${Math.round(minMtime)} now=${Date.now()} recent=${recentText || "(none)"}`,
+        );
+      }
     }
 
     if (!tmlPath || !fs.existsSync(tmlPath)) {
+      let extra = "";
+      if (debugCapture && tmlDir) {
+        const recent = listRecentTmlFiles(tmlDir, 8);
+        if (recent.length) {
+          extra = ` Vistos: ${recent.map((f) => f.name).join(", ")}.`;
+        } else {
+          extra = " No se ven .tml en el directorio.";
+        }
+        extra += ` dir=${tmlDir}`;
+      }
       throw new Error(
         "FTR_ENROLL_PROVIDER=tml pero no se encontró .tml. " +
-          "Crea/guarda un .tml en WorkedEx (C:\\FutronicSDK\\DataBase) o configura FTR_TML_PATH/FTR_TML_DIR.",
+          "Crea/guarda un .tml en WorkedEx (C:\\FutronicSDK\\DataBase) o configura FTR_TML_PATH/FTR_TML_DIR." +
+          extra,
       );
     }
 
