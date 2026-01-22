@@ -672,7 +672,13 @@ internal static class Program
 
                                     codes.Add(r);
                                     if (r == 0) break;
-                                    PumpDelay(Math.Max(0, captureLoopDelayMs));
+                                    var delayMs = Math.Max(0, captureLoopDelayMs);
+                                    if (captureArg2Mode == "timeout" && captureArg2 > 0 && r == 203)
+                                    {
+                                        // Evitar re-iniciar la captura constantemente: respeta el timeout.
+                                        delayMs = Math.Max(delayMs, captureArg2);
+                                    }
+                                    PumpDelay(delayMs);
                                 }
                             }
                             else
@@ -729,7 +735,13 @@ internal static class Program
                                 captureHistory.Add(r);
                                 capCode = r;
                                 if (r == 0) break;
-                                PumpDelay(Math.Max(0, captureLoopDelayMs));
+                                var delayMs = Math.Max(0, captureLoopDelayMs);
+                                if (captureArg2Mode == "timeout" && captureArg2 > 0 && r == 203)
+                                {
+                                    // Evitar re-iniciar la captura constantemente: respeta el timeout.
+                                    delayMs = Math.Max(delayMs, captureArg2);
+                                }
+                                PumpDelay(delayMs);
                             }
 
                             if (captureRequireOk && (captureHistory.Count == 0 || captureHistory[^1] != 0))
