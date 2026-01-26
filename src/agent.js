@@ -406,6 +406,11 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  const debugEveryRaw = Number(process.env.FINGERPRINT_AGENT_DEBUG_MATCH_EVERY);
+  const debugEvery =
+    Number.isFinite(debugEveryRaw) && debugEveryRaw > 0
+      ? Math.floor(debugEveryRaw)
+      : 0;
   let seen = 0;
   let decoded = 0;
   let decodeNull = 0;
@@ -457,7 +462,9 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
         bestIndex = result?.index;
       }
 
-      if (debug && checked <= 5) {
+      const shouldLog =
+        debug && (debugEvery > 0 ? checked % debugEvery === 0 : checked <= 5);
+      if (shouldLog) {
         console.log(
           `[DEBUG] match check #${checked} worker=${item?.workerId} idx=${result?.index} score=${result?.score} matched=${result?.matched} err=${result?.error || ""}`,
         );
@@ -520,6 +527,11 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
 
   const debug =
     String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  const debugEveryRaw = Number(process.env.FINGERPRINT_AGENT_DEBUG_MATCH_EVERY);
+  const debugEvery =
+    Number.isFinite(debugEveryRaw) && debugEveryRaw > 0
+      ? Math.floor(debugEveryRaw)
+      : 0;
   let seen = 0;
   let decoded = 0;
   let decodeNull = 0;
@@ -574,6 +586,14 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
           );
         }
         return { matched: true, score: result?.score, workerId, workerName };
+      }
+
+      const shouldLog =
+        debug && (debugEvery > 0 ? checked % debugEvery === 0 : checked <= 5);
+      if (shouldLog) {
+        console.log(
+          `[DEBUG] identify check #${checked} worker=${item?.workerId} idx=${result?.index} score=${result?.score} matched=${result?.matched} err=${result?.error || ""}`,
+        );
       }
 
       if (
@@ -635,6 +655,14 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
     };
   }
 
+  const debug =
+    String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+  const debugEveryRaw = Number(process.env.FINGERPRINT_AGENT_DEBUG_MATCH_EVERY);
+  const debugEvery =
+    Number.isFinite(debugEveryRaw) && debugEveryRaw > 0
+      ? Math.floor(debugEveryRaw)
+      : 0;
+
   let cursor = null;
   let seen = 0;
   let decoded = 0;
@@ -663,6 +691,14 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 
       const result = await verifyTemplate(base, capturedTemplate);
       checked += 1;
+
+      const shouldLog =
+        debug && (debugEvery > 0 ? checked % debugEvery === 0 : checked <= 5);
+      if (shouldLog) {
+        console.log(
+          `[DEBUG] verify check #${checked} worker=${item?.workerId || workerId} idx=${result?.index} score=${result?.score} matched=${result?.matched} err=${result?.error || ""}`,
+        );
+      }
 
       if (result?.error) {
         errorCount += 1;
