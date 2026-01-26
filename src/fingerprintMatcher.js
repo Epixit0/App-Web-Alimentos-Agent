@@ -1093,8 +1093,8 @@ export async function createTemplateFromDevice(
     // Algunos builds (como WorkedEx) parecen operar sin ftrScanAPI.dll.
     // En esos casos, FTREnroll/FTREnrollX pueden requerir que la captura se haga
     // vía FTRAPI.dll para poblar estado interno.
-    const tryCaptureFrame = false; // FORZADO PARA TEST: Se sospecha que esto causa el cuelgue de FTREnroll.
-    // String(process.env.FTR_TRY_CAPTUREFRAME || "1").trim() === "1";
+    const tryCaptureFrame =
+      String(process.env.FTR_TRY_CAPTUREFRAME || "1").trim() === "1";
     if (tryCaptureFrame && cached.FTRCaptureFrame) {
       try {
         const capHandle =
