@@ -1289,7 +1289,10 @@ export async function createTemplateFromDevice(
         String(process.env.FTR_ENROLL_TRY_NULL_HANDLE || "1").trim() === "1";
 
       const candidates = [];
-      if (handleMode === "scan" || handleMode === "auto") {
+      // En modo auto preferimos HWND/NULL primero.
+      // Hemos visto casos donde pasar el handle de scanAPI a FTREnroll puede colgar
+      // o bloquear el flujo. Si el usuario quiere forzar scan-handle, use FTR_HANDLE_MODE=scan.
+      if (handleMode === "scan") {
         if (deviceHandle)
           candidates.push({ h: deviceHandle, label: "scanner-handle" });
       }
@@ -1301,6 +1304,18 @@ export async function createTemplateFromDevice(
       }
       if (tryNullHandle) {
         candidates.push({ h: null, label: "null-handle" });
+      }
+      if (handleMode === "auto") {
+        if (deviceHandle)
+          candidates.push({ h: deviceHandle, label: "scanner-handle" });
+      }
+
+      if (debug) {
+        console.log(
+          `[DEBUG] enroll candidate handles: handleMode=${handleMode} purpose=${purposeValue} -> ${candidates
+            .map((x) => x.label)
+            .join(", ")}`,
+        );
       }
 
       for (const c of candidates) {
