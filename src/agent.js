@@ -1056,7 +1056,18 @@ while (true) {
       console.log(`Job completado: ${job._id}`);
     }
   } catch (e) {
-    console.error(`Job falló: ${job._id}: ${e.message}`);
+    const code = e?.code ? String(e.code) : "";
+    const details = e?.details != null ? e.details : null;
+    console.error(
+      `Job falló: ${job._id}: ${e.message}${code ? ` (code=${code})` : ""}`,
+    );
+    if (details) {
+      try {
+        console.error(`[DEBUG] job error details: ${JSON.stringify(details)}`);
+      } catch {
+        // ignore
+      }
+    }
     try {
       await failJob(effectiveRuntime, job._id, e.message);
     } catch (inner) {

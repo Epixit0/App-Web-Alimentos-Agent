@@ -5,23 +5,49 @@ import { dirname } from "path";
 import fs from "fs";
 
 const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-let nativeDepsAvailable = false;
 let koffi = null;
+let lib = null;
 
 try {
   koffi = require("koffi");
-  nativeDepsAvailable = true;
-} catch (error) {
-  const message = error?.message || String(error);
-  console.error(
-    "Dependencias nativas del lector (koffi) no disponibles en el agente.",
-    message,
+  // Ajusta esta ruta a donde tengas realmente tu FTRAPI.dll
+  const dllPath = join(
+    "C:",
+    "ProgramData",
+    "MarCaribeFingerprintAgent",
+    "App-Web-Alimentos-Agent",
+    "lib",
+    "FTRAPI.dll",
   );
+  lib = koffi.load(dllPath);
+  console.log("[OK] Motor FTRAPI cargado correctamente.");
+} catch (error) {
+  console.error("Error cargando dependencias nativas:", error.message);
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// --- DEFINICIÓN DE ESTRUCTURAS FUTRONIC ---
+// Es vital definir FTR_DATA para que Koffi sepa cómo enviar buffers a la DLL
+const FTR_DATA = koffi.struct("FTR_DATA", {
+  dwSize: "uint32",
+  pData: "pointer",
+});
+
+// --- VINCULACIÓN DE FUNCIONES ---
+const FTRInitialize = lib ? lib.func("int FTRInitialize()") : null;
+const FTRTerminate = lib ? lib.func("int FTRTerminate()") : null;
+const FTREnroll = lib
+  ? lib.func("int FTREnroll(int nSlot, pointer pTemplate)")
+  : null;
+// FTRSetParam ayuda a configurar el tiempo de espera y otros detalles
+const FTRSetParam = lib
+  ? lib.func("int FTRSetParam(int nParam, int nValue)")
+  : null;
+
+// Inicializamos el motor nada más cargar el módulo
+if (FTRInitialize) FTRInitialize();
 
 function getExpectedWindowsDllArch() {
   // Node en Windows suele ser x64 en Win10; si fuera x86, process.arch será ia32.
