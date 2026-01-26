@@ -451,6 +451,17 @@ function loadMatcher() {
       loadedLib.func("__stdcall", name, "int", ["void *", "int"]),
   );
 
+  // Algunas builds exponen FTRCaptureFrame con firma distinta (p.ej. (int,int)).
+  // Declaramos variantes para poder probar en runtime si devuelve 203 (handle inválido / firma mala).
+  const captureFrameIntInt = captureFrame
+    ? {
+        name: captureFrame.name,
+        fn: tryDeclare(() =>
+          lib.func("__stdcall", captureFrame.name, "int", ["int", "int"]),
+        ),
+      }
+    : null;
+
   const setParam = resolveFunction(
     lib,
     "FTRSetParam",
@@ -662,6 +673,7 @@ function loadMatcher() {
     FTRIdentify: identify?.fn || null,
     FTRIdentifyN: identifyN?.fn || null,
     FTRCaptureFrame: captureFrame?.fn || null,
+    FTRCaptureFrame_IntInt: captureFrameIntInt?.fn || null,
     FTREnroll: enroll?.fn || null,
     FTREnrollX: enrollXPtr?.fn || null,
     FTREnrollX_Int: enrollXInt?.fn || null,
@@ -1038,6 +1050,84 @@ export async function createTemplateFromDevice(
   let lastResult = null;
   let lastDwSize = null;
 
+  // Algunas DLLs no aceptan la firma (void*, int) para FTRCaptureFrame.
+  // Si devuelve 203 de forma consistente, probamos variantes (int,int) y recordamos cuál funciona.
+  let captureFrameMode = null; // null | 'ptr' | 'intint_tp' | 'intint_pt'
+
+  function callCaptureFrameAuto(handle, label, purposeValue, timeoutMs) {
+    if (!cached?.FTRCaptureFrame) return { result: null, used: null };
+
+    const preferred = String(process.env.FTR_CAPTUREFRAME_SIG || "auto")
+      .trim()
+      .toLowerCase();
+
+    const arg2Mode = String(process.env.FTR_CAPTUREFRAME_ARG2_MODE || "timeout")
+      .trim()
+      .toLowerCase();
+
+    const capArg2 = arg2Mode === "purpose" ? purposeValue : timeoutMs;
+
+    const tryPtr = () => {
+      const r = cached.FTRCaptureFrame(handle, capArg2);
+      return { result: r, used: `ptr:${label}:${arg2Mode}` };
+    };
+
+    const tryIntIntTimeoutPurpose = () => {
+      if (typeof cached.FTRCaptureFrame_IntInt !== "function")
+        return { result: null, used: null };
+      const r = cached.FTRCaptureFrame_IntInt(timeoutMs, purposeValue);
+      return { result: r, used: "intint:timeout-purpose" };
+    };
+
+    const tryIntIntPurposeTimeout = () => {
+      if (typeof cached.FTRCaptureFrame_IntInt !== "function")
+        return { result: null, used: null };
+      const r = cached.FTRCaptureFrame_IntInt(purposeValue, timeoutMs);
+      return { result: r, used: "intint:purpose-timeout" };
+    };
+
+    // Si el usuario forzó una firma, respétala.
+    if (preferred === "ptr" || preferred === "ptr-int") {
+      return tryPtr();
+    }
+    if (preferred === "intint" || preferred === "int-int") {
+      // Orden configurable
+      const order = String(process.env.FTR_CAPTUREFRAME_INTINT_ORDER || "tp")
+        .trim()
+        .toLowerCase();
+      return order === "pt"
+        ? tryIntIntPurposeTimeout()
+        : tryIntIntTimeoutPurpose();
+    }
+
+    // auto: usa el modo recordado si existe
+    if (captureFrameMode === "ptr") return tryPtr();
+    if (captureFrameMode === "intint_tp") return tryIntIntTimeoutPurpose();
+    if (captureFrameMode === "intint_pt") return tryIntIntPurposeTimeout();
+
+    // Primera vez: prueba ptr primero.
+    const first = tryPtr();
+    if (first.result !== 203) {
+      captureFrameMode = "ptr";
+      return first;
+    }
+
+    // Si ptr devolvió 203, probar int,int en ambos órdenes.
+    const tp = tryIntIntTimeoutPurpose();
+    if (tp.result != null && tp.result !== 203) {
+      captureFrameMode = "intint_tp";
+      return tp;
+    }
+    const pt = tryIntIntPurposeTimeout();
+    if (pt.result != null && pt.result !== 203) {
+      captureFrameMode = "intint_pt";
+      return pt;
+    }
+
+    // Si todo devuelve 203/null, nos quedamos con el primero para logging.
+    return first;
+  }
+
   function allocFtrData(templateBufferSize, outBuffer) {
     // Koffi puede representar structs de distintas maneras según versión.
     // Intentamos varias estrategias para obtener un FTR_DATA escribible.
@@ -1095,6 +1185,11 @@ export async function createTemplateFromDevice(
     // vía FTRAPI.dll para poblar estado interno.
     const tryCaptureFrame =
       String(process.env.FTR_TRY_CAPTUREFRAME || "1").trim() === "1";
+    if (debug) {
+      console.log(
+        `[DEBUG] pre-capture: FTR_TRY_CAPTUREFRAME=${tryCaptureFrame ? "1" : "0"} hasFTRCaptureFrame=${cached.FTRCaptureFrame ? "1" : "0"}`,
+      );
+    }
     if (tryCaptureFrame && cached.FTRCaptureFrame) {
       try {
         const capHandle =
@@ -1137,10 +1232,16 @@ export async function createTemplateFromDevice(
 
         let capResult = null;
         for (let i = 0; i <= capRetries; i += 1) {
-          capResult = cached.FTRCaptureFrame(capHandle, capArg2);
+          const called = callCaptureFrameAuto(
+            capHandle,
+            capHandle ? label : "null",
+            purposeValue,
+            timeoutMs,
+          );
+          capResult = called.result;
           if (debug) {
             console.log(
-              `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) arg2=${capArg2} mode=${capArg2Mode} try=${i + 1}/${capRetries + 1} result=${capResult}`,
+              `[DEBUG] FTRCaptureFrame(${capHandle ? label : "null"}) arg2=${capArg2} mode=${capArg2Mode} try=${i + 1}/${capRetries + 1} result=${capResult} used=${called.used || "?"}`,
             );
           }
 
@@ -1288,6 +1389,11 @@ export async function createTemplateFromDevice(
       const tryNullHandle =
         String(process.env.FTR_ENROLL_TRY_NULL_HANDLE || "1").trim() === "1";
 
+      const tryMessageHwnd =
+        String(process.env.FTR_TRY_MESSAGE_HWND || "1").trim() === "1";
+      const tryConsoleHwnd =
+        String(process.env.FTR_TRY_CONSOLE_HWND || "1").trim() === "1";
+
       const candidates = [];
       // En modo auto preferimos HWND/NULL primero.
       // Hemos visto casos donde pasar el handle de scanAPI a FTREnroll puede colgar
@@ -1297,10 +1403,12 @@ export async function createTemplateFromDevice(
           candidates.push({ h: deviceHandle, label: "scanner-handle" });
       }
       if (tryHwnd && messageHwnd) {
-        candidates.push({ h: messageHwnd, label: "message-hwnd" });
+        if (tryMessageHwnd)
+          candidates.push({ h: messageHwnd, label: "message-hwnd" });
       }
       if (tryHwnd && consoleHwnd) {
-        candidates.push({ h: consoleHwnd, label: "console-hwnd" });
+        if (tryConsoleHwnd)
+          candidates.push({ h: consoleHwnd, label: "console-hwnd" });
       }
       if (tryNullHandle) {
         candidates.push({ h: null, label: "null-handle" });
