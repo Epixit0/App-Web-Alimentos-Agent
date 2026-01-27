@@ -1101,9 +1101,10 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 
 async function capture(job) {
   const jobType = job?.type;
-  const serverMatchMode =
-    String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
   const useSoftwareMatcher = isSoftwareMatcherEnabledOnAgent();
+  const serverMatchMode =
+    !useSoftwareMatcher &&
+    String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
   const enrollProvider = String(process.env.FTR_ENROLL_PROVIDER || "native")
     .trim()
     .toLowerCase();
@@ -1458,6 +1459,7 @@ while (true) {
   console.log(`Job recibido: ${job._id} tipo=${job.type}`);
 
   const serverMatchMode =
+    !isSoftwareMatcherEnabledOnAgent() &&
     String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
 
   try {
