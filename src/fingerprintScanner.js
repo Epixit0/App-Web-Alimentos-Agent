@@ -4,6 +4,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let koffi = null;
 let nativeAvailable = false;
@@ -15,8 +17,254 @@ try {
   nativeAvailable = false;
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// --- SCANNER API (export getScanner) ---
+// Definimos estructuras y funciones de carga de DLL para captura (ftrScanAPI / FTRAPI)
+const FTRSCAN_FRAME_PARAMETERS =
+  nativeAvailable && koffi && typeof koffi.struct === "function"
+    ? koffi.struct("FTRSCAN_FRAME_PARAMETERS", {
+        nWidth: "int",
+        nHeight: "int",
+        nImageSize: "int",
+        nResolution: "int",
+      })
+    : null;
+
+let ftrScanAPI = null;
+
+const ftrAPIPath = path.join(__dirname, "../lib/FTRAPI.dll");
+const ftrScanAPIPath = path.join(__dirname, "../lib/ftrScanAPI.dll");
+
+function fileExistsLocal(p) {
+  try {
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+}
+
+function loadScanDLLLocal(dllPath, dllName) {
+  try {
+    if (!nativeAvailable || !koffi) return null;
+    if (typeof dllPath !== "string") return null;
+    if (!fileExistsLocal(dllPath)) return null;
+
+    // validar arch
+    const expected =
+      process.arch === "x64"
+        ? "x64"
+        : process.arch === "ia32"
+          ? "x86"
+          : process.arch;
+    const detected =
+      typeof detectPeMachine === "function"
+        ? detectPeMachine(dllPath)
+        : { arch: null };
+    if (detected.arch && detected.arch !== expected) {
+      console.error(
+        `[ERROR] ${dllName} parece ser ${detected.arch} pero tu Node es ${expected}.`,
+      );
+      return null;
+    }
+
+    const lib = koffi.load(dllPath);
+    const library = {
+      ftrScanOpenDevice: lib.func(
+        "__stdcall",
+        "ftrScanOpenDevice",
+        "void *",
+        [],
+      ),
+      ftrScanGetFrame: lib.func("__stdcall", "ftrScanGetFrame", "int", [
+        "void *",
+        "void *",
+        "FTRSCAN_FRAME_PARAMETERS *",
+      ]),
+      ftrScanCloseDevice: lib.func("__stdcall", "ftrScanCloseDevice", "void", [
+        "void *",
+      ]),
+    };
+    return library;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Intentar cargar ftrScanAPI.dll o FTRAPI.dll
+ftrScanAPI = loadScanDLLLocal(ftrScanAPIPath, "ftrScanAPI.dll");
+if (!ftrScanAPI) {
+  ftrScanAPI = loadScanDLLLocal(ftrAPIPath, "FTRAPI.dll");
+}
+
+const FTR_TRUE = 1;
+
+class FingerprintScanner {
+  constructor() {
+    this.handle = null;
+    this.isOpen = false;
+  }
+
+  sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  isNullHandle(handle) {
+    if (handle == null) return true;
+    if (typeof handle === "number") return handle === 0;
+    if (nativeAvailable && koffi && typeof koffi.address === "function") {
+      try {
+        const addr = koffi.address(handle);
+        if (typeof addr === "bigint") return addr === 0n;
+        if (typeof addr === "number") return addr === 0;
+      } catch {
+        // ignore
+      }
+    }
+    if (Buffer.isBuffer(handle)) return handle.length === 0;
+    if (typeof handle.isNull === "function") {
+      try {
+        return handle.isNull();
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  openDevice() {
+    try {
+      if (!ftrScanAPI) {
+        this.isOpen = false;
+        return false;
+      }
+      if (this.isOpen) return true;
+      this.handle = ftrScanAPI.ftrScanOpenDevice();
+      if (this.isNullHandle(this.handle)) {
+        this.isOpen = false;
+        return false;
+      }
+      this.isOpen = true;
+      return true;
+    } catch {
+      this.isOpen = false;
+      return false;
+    }
+  }
+
+  isDeviceAvailable() {
+    try {
+      if (!ftrScanAPI) return false;
+      const testHandle = ftrScanAPI.ftrScanOpenDevice();
+      if (this.isNullHandle(testHandle)) return false;
+      ftrScanAPI.ftrScanCloseDevice(testHandle);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  getFrame(bufferSize = 153600) {
+    try {
+      if (!ftrScanAPI) return null;
+      if (!FTRSCAN_FRAME_PARAMETERS) return null;
+      if (!this.isOpen || this.isNullHandle(this.handle)) return null;
+
+      const imageBuffer = Buffer.alloc(bufferSize);
+      const frameParams = {
+        nWidth: 0,
+        nHeight: 0,
+        nImageSize: bufferSize,
+        nResolution: 0,
+      };
+      const result = ftrScanAPI.ftrScanGetFrame(
+        this.handle,
+        imageBuffer,
+        frameParams,
+      );
+      if (result !== FTR_TRUE) return null;
+      const actualSize =
+        frameParams.nImageSize > 0 ? frameParams.nImageSize : bufferSize;
+      return {
+        frame: imageBuffer.slice(0, actualSize),
+        width: frameParams.nWidth || null,
+        height: frameParams.nHeight || null,
+        dpi: frameParams.nResolution || null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async getFrameAsync(bufferSize = 153600) {
+    try {
+      if (!ftrScanAPI) return null;
+      if (!FTRSCAN_FRAME_PARAMETERS) return null;
+      if (!this.isOpen || this.isNullHandle(this.handle)) return null;
+
+      const fn = ftrScanAPI.ftrScanGetFrame;
+      if (!fn || typeof fn.async !== "function") {
+        return this.getFrame(bufferSize);
+      }
+
+      const imageBuffer = Buffer.alloc(bufferSize);
+      const frameParams = {
+        nWidth: 0,
+        nHeight: 0,
+        nImageSize: bufferSize,
+        nResolution: 0,
+      };
+
+      const result = await new Promise((resolve, reject) => {
+        fn.async(this.handle, imageBuffer, frameParams, (err, res) => {
+          if (err) reject(err);
+          else resolve(res);
+        });
+      });
+
+      if (result !== FTR_TRUE) return null;
+      const actualSize =
+        frameParams.nImageSize > 0 ? frameParams.nImageSize : bufferSize;
+      return {
+        frame: imageBuffer.slice(0, actualSize),
+        width: frameParams.nWidth || null,
+        height: frameParams.nHeight || null,
+        dpi: frameParams.nResolution || null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async captureFingerprintWithMeta(maxAttempts = 3, bufferSize = 153600) {
+    for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
+      const res = await this.getFrameAsync(bufferSize);
+      if (res && res.frame && res.frame.length > 0) return res;
+      if (attempts < maxAttempts) await this.sleep(250);
+    }
+    return { frame: null, width: null, height: null, dpi: null };
+  }
+
+  closeDevice() {
+    try {
+      if (!ftrScanAPI) return;
+      if (this.isOpen && this.handle && !this.isNullHandle(this.handle)) {
+        ftrScanAPI.ftrScanCloseDevice(this.handle);
+        this.handle = null;
+        this.isOpen = false;
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+let scannerInstance = null;
+
+export const getScanner = () => {
+  if (!scannerInstance) scannerInstance = new FingerprintScanner();
+  return scannerInstance;
+};
+
+export default FingerprintScanner;
 
 const defaultDllPath = path.join(__dirname, "../lib/FTRAPI.dll");
 
