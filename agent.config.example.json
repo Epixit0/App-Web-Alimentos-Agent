@@ -4,11 +4,22 @@
   "pollIntervalMs": 2000,
   "heartbeatIntervalMs": 10000,
   "env": {
+    "FINGERPRINT_AGENT_SERVER_MATCH": "1",
     "FINGERPRINT_AGENT_DEBUG_MATCH": "1",
     "FTR_USE_SCANAPI": "1",
     "FTR_TRY_CAPTUREFRAME": "0",
     "FTR_SET_PARAMS_JSON": "{\"4\": 1, \"12\": 10, \"13\": 1}",
     "FTR_PARAM_PROBE_ON_201": "1",
     "FTR_PARAM_PROBE_KEEP": "1"
+      // Modo recomendado cuando el backend está en Vercel:
+      // - El matching se hace localmente usando App-Web-Alimentos-SoftwareMatcher
+      // - Se envía templateFormat=sourceafis al backend, que solo almacena
+      "FINGERPRINT_AGENT_SOFTWARE_MATCHER": "1",
+      "FINGERPRINT_SOFTWARE_MATCHER_URL": "http://127.0.0.1:5100",
+
+      // Metadata del frame crudo (debe coincidir con el dispositivo; fallback si no se detecta)
+      "FINGERPRINT_IMAGE_WIDTH": "320",
+      "FINGERPRINT_IMAGE_HEIGHT": "480",
+      "FINGERPRINT_IMAGE_DPI": "500"
   }
 }

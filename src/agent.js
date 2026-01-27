@@ -13,6 +13,146 @@ import {
   verifyTemplate,
 } from "./fingerprintMatcher.js";
 
+function normalizeBaseUrl(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/\/+$/, "");
+}
+
+function isSoftwareMatcherEnabledOnAgent() {
+  return (
+    String(process.env.FINGERPRINT_AGENT_SOFTWARE_MATCHER || "")
+      .trim()
+      .toLowerCase() === "1"
+  );
+}
+
+function getAgentSoftwareMatcherBaseUrl() {
+  const fromEnv =
+    typeof process.env.FINGERPRINT_SOFTWARE_MATCHER_URL === "string" &&
+    process.env.FINGERPRINT_SOFTWARE_MATCHER_URL.trim()
+      ? process.env.FINGERPRINT_SOFTWARE_MATCHER_URL.trim()
+      : null;
+  return normalizeBaseUrl(fromEnv || "http://127.0.0.1:5100");
+}
+
+function getDefaultRawParamsOnAgent() {
+  const widthRaw = Number(process.env.FINGERPRINT_IMAGE_WIDTH || 320);
+  const heightRaw = Number(process.env.FINGERPRINT_IMAGE_HEIGHT || 480);
+  const dpiRaw = Number(process.env.FINGERPRINT_IMAGE_DPI || 500);
+  return {
+    width: Number.isFinite(widthRaw) && widthRaw > 0 ? widthRaw : 320,
+    height: Number.isFinite(heightRaw) && heightRaw > 0 ? heightRaw : 480,
+    dpi: Number.isFinite(dpiRaw) && dpiRaw > 0 ? dpiRaw : 500,
+  };
+}
+
+async function softwareMatcherFetch(pathname, body) {
+  const baseUrl = getAgentSoftwareMatcherBaseUrl();
+  const url = `${baseUrl}${pathname.startsWith("/") ? "" : "/"}${pathname}`;
+
+  const controller = new AbortController();
+  const timeoutMsRaw = Number(
+    process.env.FINGERPRINT_SOFTWARE_MATCHER_TIMEOUT_MS || 8000,
+  );
+  const timeoutMs =
+    Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+      ? Math.min(timeoutMsRaw, 60_000)
+      : 8000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await nodeFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+      signal: controller.signal,
+    });
+
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      const message =
+        (data && typeof data.message === "string" && data.message) ||
+        `HTTP ${res.status}`;
+      const err = new Error(message);
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function softwareCreateTemplateFromRaw(rawBuf, meta) {
+  const { width, height, dpi } = meta || {};
+  const data = await softwareMatcherFetch("/api/template", {
+    RawGrayscaleBase64: Buffer.isBuffer(rawBuf)
+      ? rawBuf.toString("base64")
+      : null,
+    Width: width,
+    Height: height,
+    Dpi: dpi,
+  });
+  const b64 = data?.templateBase64;
+  if (typeof b64 !== "string" || !b64) {
+    throw new Error("SoftwareMatcher no devolvió templateBase64");
+  }
+  const tpl = Buffer.from(b64, "base64");
+  if (!tpl.length) throw new Error("Template SourceAFIS vacío");
+  return tpl;
+}
+
+async function softwareVerifyTemplates(probeTemplateBuf, candidateTemplateBuf) {
+  const data = await softwareMatcherFetch("/api/verify", {
+    ProbeTemplateBase64: probeTemplateBuf.toString("base64"),
+    CandidateTemplateBase64: candidateTemplateBuf.toString("base64"),
+  });
+  return {
+    matched: Boolean(data?.matched),
+    score:
+      data?.score != null && Number.isFinite(Number(data.score))
+        ? Number(data.score)
+        : undefined,
+    threshold:
+      data?.threshold != null && Number.isFinite(Number(data.threshold))
+        ? Number(data.threshold)
+        : undefined,
+  };
+}
+
+async function softwareIdentifyBatch(probeTemplateBuf, candidates) {
+  const data = await softwareMatcherFetch("/api/identify", {
+    ProbeTemplateBase64: probeTemplateBuf.toString("base64"),
+    Candidates: candidates,
+  });
+  return {
+    matched: Boolean(data?.matched),
+    workerId:
+      typeof data?.workerId === "string" && data.workerId.trim()
+        ? data.workerId.trim()
+        : null,
+    score:
+      data?.score != null && Number.isFinite(Number(data.score))
+        ? Number(data.score)
+        : undefined,
+    threshold:
+      data?.threshold != null && Number.isFinite(Number(data.threshold))
+        ? Number(data.threshold)
+        : undefined,
+  };
+}
+
 const require = createRequire(import.meta.url);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -117,13 +257,6 @@ function applyEnvFromConfigFile() {
       `[INFO] Variables env aplicadas desde config.json: ${applied.sort().join(", ")}`,
     );
   }
-}
-
-function normalizeBaseUrl(value) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.replace(/\/+$/, "");
 }
 
 function parseRegQueryValue(output, valueName) {
@@ -393,7 +526,93 @@ function decodeTemplateFromApi(item) {
   return buf;
 }
 
+async function decodeOrConvertToSourceAfisTemplate(item) {
+  const format =
+    typeof item?.templateFormat === "string" && item.templateFormat
+      ? String(item.templateFormat).toLowerCase().trim()
+      : "raw";
+
+  const buf = decodeTemplateFromApi(item);
+  if (!buf) return null;
+
+  if (format === "sourceafis") {
+    return buf;
+  }
+
+  // legacy/raw: convertir usando el matcher local
+  const defaults = getDefaultRawParamsOnAgent();
+  const width =
+    item?.rawWidth != null && Number.isFinite(Number(item.rawWidth))
+      ? Number(item.rawWidth)
+      : defaults.width;
+  const height =
+    item?.rawHeight != null && Number.isFinite(Number(item.rawHeight))
+      ? Number(item.rawHeight)
+      : defaults.height;
+  const dpi =
+    item?.rawDpi != null && Number.isFinite(Number(item.rawDpi))
+      ? Number(item.rawDpi)
+      : defaults.dpi;
+
+  return softwareCreateTemplateFromRaw(buf, { width, height, dpi });
+}
+
 async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
+  if (isSoftwareMatcherEnabledOnAgent()) {
+    const debug =
+      String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+    let cursor = null;
+    for (;;) {
+      const { items, nextCursor } = await listTemplates(runtime, {
+        excludeWorkerId: workerId,
+        limit: "200",
+        ...(cursor ? { cursor } : {}),
+      });
+
+      const candidates = [];
+      for (const item of items) {
+        const tpl = await decodeOrConvertToSourceAfisTemplate(item);
+        if (!tpl) continue;
+        const id = item?.workerId || item?.fingerprintId || "unknown";
+        candidates.push({
+          Id: String(id),
+          TemplateBase64: tpl.toString("base64"),
+        });
+      }
+
+      if (candidates.length > 0) {
+        const result = await softwareIdentifyBatch(
+          capturedTemplate,
+          candidates,
+        );
+        if (debug) {
+          console.log(
+            `[DEBUG] software duplicate batch: candidates=${candidates.length} matched=${result.matched} score=${result.score}`,
+          );
+        }
+        if (result.matched) {
+          // buscamos nombre del worker por si está en el batch
+          const matchedItem = items.find(
+            (i) => String(i?.workerId) === String(result.workerId),
+          );
+          const workerName =
+            matchedItem?.workerName || result.workerId || "desconocido";
+          return {
+            duplicate: true,
+            message: `Esta huella ya ha sido registrada por otro trabajador (${workerName}).`,
+            score: result.score,
+          };
+        }
+      }
+
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+
+    return { duplicate: false };
+  }
+
   if (!isMatcherAvailable()) {
     const info = getMatcherInfo();
     return {
@@ -515,6 +734,84 @@ async function findDuplicateForEnroll(runtime, workerId, capturedTemplate) {
 }
 
 async function identifyAcrossWorkers(runtime, capturedTemplate) {
+  if (isSoftwareMatcherEnabledOnAgent()) {
+    const debug =
+      String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+    let cursor = null;
+    let best = {
+      matched: false,
+      score: -Infinity,
+      workerId: null,
+      workerName: null,
+    };
+
+    for (;;) {
+      const { items, nextCursor } = await listTemplates(runtime, {
+        limit: "200",
+        ...(cursor ? { cursor } : {}),
+      });
+
+      const candidates = [];
+      const nameByWorkerId = new Map();
+      for (const item of items) {
+        const tpl = await decodeOrConvertToSourceAfisTemplate(item);
+        if (!tpl) continue;
+        const wid = item?.workerId || null;
+        const wname = item?.workerName || null;
+        if (wid && wname) nameByWorkerId.set(String(wid), String(wname));
+        if (!wid) continue;
+        candidates.push({
+          Id: String(wid),
+          TemplateBase64: tpl.toString("base64"),
+        });
+      }
+
+      if (candidates.length > 0) {
+        const result = await softwareIdentifyBatch(
+          capturedTemplate,
+          candidates,
+        );
+        if (debug) {
+          console.log(
+            `[DEBUG] software identify batch: candidates=${candidates.length} matched=${result.matched} worker=${result.workerId || "n/a"} score=${result.score}`,
+          );
+        }
+        if (result.score != null && Number.isFinite(Number(result.score))) {
+          const score = Number(result.score);
+          if (score > (best.score ?? -Infinity)) {
+            const wid = result.workerId || null;
+            best = {
+              matched: false,
+              score,
+              workerId: wid,
+              workerName: wid ? nameByWorkerId.get(String(wid)) || null : null,
+            };
+          }
+        }
+        if (result.matched) {
+          const wid = result.workerId;
+          return {
+            matched: true,
+            score: result.score,
+            workerId: wid,
+            workerName: wid ? nameByWorkerId.get(String(wid)) || wid : null,
+          };
+        }
+      }
+
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+
+    return {
+      matched: false,
+      score: best.score !== -Infinity ? best.score : undefined,
+      workerId: best.workerId,
+      workerName: best.workerName,
+    };
+  }
+
   if (!isMatcherAvailable()) {
     const info = getMatcherInfo();
     return {
@@ -645,6 +942,61 @@ async function identifyAcrossWorkers(runtime, capturedTemplate) {
 }
 
 async function verifyForWorker(runtime, workerId, capturedTemplate) {
+  if (isSoftwareMatcherEnabledOnAgent()) {
+    const debug =
+      String(process.env.FINGERPRINT_AGENT_DEBUG_MATCH || "").trim() === "1";
+
+    let cursor = null;
+    let best = { matched: false, score: -Infinity };
+
+    for (;;) {
+      const { items, nextCursor } = await listTemplates(runtime, {
+        workerId,
+        limit: "200",
+        ...(cursor ? { cursor } : {}),
+      });
+
+      const candidates = [];
+      for (const item of items) {
+        const tpl = await decodeOrConvertToSourceAfisTemplate(item);
+        if (!tpl) continue;
+        candidates.push({
+          Id: String(workerId),
+          TemplateBase64: tpl.toString("base64"),
+        });
+      }
+
+      if (candidates.length > 0) {
+        const result = await softwareIdentifyBatch(
+          capturedTemplate,
+          candidates,
+        );
+        if (debug) {
+          console.log(
+            `[DEBUG] software verify batch: candidates=${candidates.length} matched=${result.matched} score=${result.score}`,
+          );
+        }
+        if (result.matched) {
+          return { matched: true, score: result.score };
+        }
+        if (
+          result.score != null &&
+          Number(result.score) > (best.score ?? -Infinity)
+        ) {
+          best = { matched: false, score: Number(result.score) };
+        }
+      }
+
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+
+    return {
+      matched: false,
+      score: best.score !== -Infinity ? best.score : undefined,
+    };
+  }
+
   if (!isMatcherAvailable()) {
     const info = getMatcherInfo();
     return {
@@ -749,6 +1101,9 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 
 async function capture(job) {
   const jobType = job?.type;
+  const serverMatchMode =
+    String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
+  const useSoftwareMatcher = isSoftwareMatcherEnabledOnAgent();
   const enrollProvider = String(process.env.FTR_ENROLL_PROVIDER || "native")
     .trim()
     .toLowerCase();
@@ -790,6 +1145,98 @@ async function capture(job) {
   }
 
   try {
+    if (
+      useSoftwareMatcher &&
+      (jobType === "enroll" || jobType === "verify" || jobType === "identify")
+    ) {
+      const defaults = getDefaultRawParamsOnAgent();
+
+      const warmupAttemptsRaw = Number(process.env.FTR_WARMUP_ATTEMPTS || 8);
+      const warmupAttempts =
+        Number.isFinite(warmupAttemptsRaw) && warmupAttemptsRaw > 0
+          ? Math.min(warmupAttemptsRaw, 20)
+          : 8;
+
+      let warm = null;
+      for (let i = 0; i < warmupAttempts; i += 1) {
+        warm = await scanner.captureFingerprintWithMeta(1, 153600);
+        if (
+          warm?.frame &&
+          warm.frame.length > 0 &&
+          warm.frame.some((b) => b !== 0)
+        )
+          break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
+      const res = await scanner.captureFingerprintWithMeta(5, 153600);
+      if (!res?.frame || res.frame.length === 0) {
+        throw new Error("No se pudo capturar la huella");
+      }
+
+      const hasData = res.frame.some((b) => b !== 0);
+      if (!hasData) {
+        throw new Error("La huella capturada no contiene datos válidos");
+      }
+
+      const width = res.width || defaults.width;
+      const height = res.height || defaults.height;
+      const dpi = res.dpi || defaults.dpi;
+
+      const tpl = await softwareCreateTemplateFromRaw(res.frame, {
+        width,
+        height,
+        dpi,
+      });
+
+      return {
+        _format: "sourceafis",
+        template: tpl,
+        raw: res.frame,
+        rawWidth: width,
+        rawHeight: height,
+        rawDpi: dpi,
+      };
+    }
+
+    // En modo server-match, evitamos completamente el matcher nativo (FTRAPI.dll):
+    // capturamos el frame crudo y lo enviamos al backend para comparar vía SOFTWARE_MATCHER_URL.
+    if (
+      serverMatchMode &&
+      (jobType === "enroll" || jobType === "verify" || jobType === "identify")
+    ) {
+      const warmupAttemptsRaw = Number(process.env.FTR_WARMUP_ATTEMPTS || 8);
+      const warmupAttempts =
+        Number.isFinite(warmupAttemptsRaw) && warmupAttemptsRaw > 0
+          ? Math.min(warmupAttemptsRaw, 20)
+          : 8;
+
+      let warm = null;
+      for (let i = 0; i < warmupAttempts; i += 1) {
+        warm = await scanner.captureFingerprint(1, 153600);
+        if (warm && warm.length > 0 && warm.some((b) => b !== 0)) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
+      const frame = await scanner.captureFingerprint(5, 153600);
+      if (!frame || frame.length === 0) {
+        throw new Error("No se pudo capturar la huella");
+      }
+
+      const hasData = frame.some((b) => b !== 0);
+      if (!hasData) {
+        throw new Error("La huella capturada no contiene datos válidos");
+      }
+
+      if (debugCapture) {
+        console.log(
+          `[DEBUG] server-match capture ok: bytes=${frame.length} warmup=${warm ? "ok" : "n/a"}`,
+        );
+      }
+
+      return frame;
+    }
+
     // IMPORTANTE: para que FTRSetBaseTemplate/FTRIdentify funcionen, debemos guardar/usar
     // templates reales del SDK (no el frame crudo). Los frames crudos suelen causar
     // errores en el matcher y nunca detectan duplicados.
@@ -1010,10 +1457,40 @@ while (true) {
 
   console.log(`Job recibido: ${job._id} tipo=${job.type}`);
 
-  try {
-    const template = await capture({ ...job, _receivedAtMs: Date.now() });
+  const serverMatchMode =
+    String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
 
-    if (job.type === "enroll") {
+  try {
+    const captured = await capture({ ...job, _receivedAtMs: Date.now() });
+    const softwareCaptured =
+      captured &&
+      typeof captured === "object" &&
+      Buffer.isBuffer(captured.template)
+        ? captured
+        : null;
+    const template =
+      softwareCaptured?.template && Buffer.isBuffer(softwareCaptured.template)
+        ? softwareCaptured.template
+        : captured;
+
+    if (serverMatchMode) {
+      // El backend hace el matching (dup/verify/identify) con SOFTWARE_MATCHER_URL.
+      if (job.type === "enroll") {
+        await submitCapture(effectiveRuntime, job._id, {
+          templateBase64: template.toString("base64"),
+          agentCheckedDuplicates: false,
+        });
+        console.log(`Job completado: ${job._id}`);
+      } else if (job.type === "verify" || job.type === "identify") {
+        await submitCapture(effectiveRuntime, job._id, {
+          templateBase64: template.toString("base64"),
+        });
+        console.log(`Job completado: ${job._id}`);
+      } else {
+        await submitCapture(effectiveRuntime, job._id, template);
+        console.log(`Job completado: ${job._id}`);
+      }
+    } else if (job.type === "enroll") {
       const dupe = await findDuplicateForEnroll(
         effectiveRuntime,
         job.workerId,
@@ -1027,10 +1504,22 @@ while (true) {
         await failJob(effectiveRuntime, job._id, dupe.message);
         console.error(`Job falló: ${job._id}: ${dupe.message}`);
       } else {
-        await submitCapture(effectiveRuntime, job._id, {
-          templateBase64: template.toString("base64"),
-          agentCheckedDuplicates: true,
-        });
+        if (softwareCaptured && softwareCaptured._format === "sourceafis") {
+          await submitCapture(effectiveRuntime, job._id, {
+            templateFormat: "sourceafis",
+            templateBase64: softwareCaptured.template.toString("base64"),
+            rawImageBase64: softwareCaptured.raw.toString("base64"),
+            rawWidth: softwareCaptured.rawWidth,
+            rawHeight: softwareCaptured.rawHeight,
+            rawDpi: softwareCaptured.rawDpi,
+            agentCheckedDuplicates: true,
+          });
+        } else {
+          await submitCapture(effectiveRuntime, job._id, {
+            templateBase64: template.toString("base64"),
+            agentCheckedDuplicates: true,
+          });
+        }
         console.log(`Job completado: ${job._id}`);
       }
     } else if (job.type === "verify") {

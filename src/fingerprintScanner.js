@@ -473,6 +473,72 @@ class FingerprintScanner {
     }
   }
 
+  getFrameWithMeta(bufferSize = 153600) {
+    try {
+      ensureScannerLibraryLoaded();
+      if (!ftrScanAPI) {
+        return null;
+      }
+
+      if (!FTRSCAN_FRAME_PARAMETERS) {
+        return null;
+      }
+
+      if (!this.isOpen || !this.handle || this.isNullHandle(this.handle)) {
+        return null;
+      }
+
+      const imageBuffer = Buffer.alloc(bufferSize);
+
+      const frameParams = {
+        nWidth: 0,
+        nHeight: 0,
+        nImageSize: bufferSize,
+        nResolution: 0,
+      };
+
+      const result = ftrScanAPI.ftrScanGetFrame(
+        this.handle,
+        imageBuffer,
+        frameParams,
+      );
+
+      if (process.env.DEBUG_FINGERPRINT === "1") {
+        console.log(
+          `[DEBUG_FINGERPRINT] ftrScanGetFrame(meta) result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`,
+        );
+      }
+
+      if (result !== FTR_TRUE) {
+        return null;
+      }
+
+      const actualSize =
+        frameParams.nImageSize > 0 ? frameParams.nImageSize : bufferSize;
+
+      return {
+        frame: imageBuffer.slice(0, actualSize),
+        width:
+          Number.isFinite(Number(frameParams.nWidth)) &&
+          Number(frameParams.nWidth) > 0
+            ? Number(frameParams.nWidth)
+            : null,
+        height:
+          Number.isFinite(Number(frameParams.nHeight)) &&
+          Number(frameParams.nHeight) > 0
+            ? Number(frameParams.nHeight)
+            : null,
+        dpi:
+          Number.isFinite(Number(frameParams.nResolution)) &&
+          Number(frameParams.nResolution) > 0
+            ? Number(frameParams.nResolution)
+            : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async getFrameAsync(bufferSize = 153600) {
     try {
       ensureScannerLibraryLoaded();
@@ -522,11 +588,89 @@ class FingerprintScanner {
     }
   }
 
+  async getFrameAsyncWithMeta(bufferSize = 153600) {
+    try {
+      ensureScannerLibraryLoaded();
+      if (!ftrScanAPI) return null;
+      if (!FTRSCAN_FRAME_PARAMETERS) return null;
+      if (!this.isOpen || !this.handle || this.isNullHandle(this.handle))
+        return null;
+
+      const fn = ftrScanAPI.ftrScanGetFrame;
+      if (!fn) return null;
+
+      const imageBuffer = Buffer.alloc(bufferSize);
+      const frameParams = {
+        nWidth: 0,
+        nHeight: 0,
+        nImageSize: bufferSize,
+        nResolution: 0,
+      };
+
+      const result =
+        typeof fn.async === "function"
+          ? await new Promise((resolve, reject) => {
+              fn.async(this.handle, imageBuffer, frameParams, (err, res) => {
+                if (err) reject(err);
+                else resolve(res);
+              });
+            })
+          : fn(this.handle, imageBuffer, frameParams);
+
+      if (process.env.DEBUG_FINGERPRINT === "1") {
+        console.log(
+          `[DEBUG_FINGERPRINT] ftrScanGetFrame.async(meta) result=${result} size=${frameParams.nImageSize} w=${frameParams.nWidth} h=${frameParams.nHeight} res=${frameParams.nResolution}`,
+        );
+      }
+
+      if (result !== FTR_TRUE) {
+        return null;
+      }
+
+      const actualSize =
+        frameParams.nImageSize > 0 ? frameParams.nImageSize : bufferSize;
+
+      return {
+        frame: imageBuffer.slice(0, actualSize),
+        width:
+          Number.isFinite(Number(frameParams.nWidth)) &&
+          Number(frameParams.nWidth) > 0
+            ? Number(frameParams.nWidth)
+            : null,
+        height:
+          Number.isFinite(Number(frameParams.nHeight)) &&
+          Number(frameParams.nHeight) > 0
+            ? Number(frameParams.nHeight)
+            : null,
+        dpi:
+          Number.isFinite(Number(frameParams.nResolution)) &&
+          Number(frameParams.nResolution) > 0
+            ? Number(frameParams.nResolution)
+            : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async captureFingerprint(maxAttempts = 3, bufferSize = 153600) {
     for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
       const frame = await this.getFrameAsync(bufferSize);
       if (frame && frame.length > 0) {
         return frame;
+      }
+      if (attempts < maxAttempts) {
+        await this.sleep(250);
+      }
+    }
+    return null;
+  }
+
+  async captureFingerprintWithMeta(maxAttempts = 3, bufferSize = 153600) {
+    for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
+      const res = await this.getFrameAsyncWithMeta(bufferSize);
+      if (res?.frame && res.frame.length > 0) {
+        return res;
       }
       if (attempts < maxAttempts) {
         await this.sleep(250);
