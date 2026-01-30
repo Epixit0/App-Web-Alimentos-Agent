@@ -93,6 +93,15 @@ Campos típicos:
 
 `stationId` es **opcional**.
 
+Si quieres que cada PC se identifique sola sin depender del pool `pc-1..pc-6`,
+activa en `env`:
+
+- `FINGERPRINT_AGENT_AUTO_STATIONID=1`
+
+Cuando está activo y no hay `stationId` en el config, el agente usa el `hostname`
+local como `stationId` (normalizado), evitando que tengas que editar el archivo en
+cada instalación.
+
 ### Instalar en varias PCs sin editar `stationId`
 
 Opción recomendada (sin tocar el nombre de la PC):

@@ -20,6 +20,23 @@ function normalizeBaseUrl(value) {
   return trimmed.replace(/\/+$/, "");
 }
 
+function normalizeStationId(value) {
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw) return null;
+
+  // Permitimos solo [a-z0-9-_.] para evitar problemas en URLs/querystring.
+  // Convertimos espacios y otros caracteres a '-'.
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  if (!normalized) return null;
+  return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
+}
+
 function getSoftwareMatcherPolicyOnAgent() {
   const flag = String(process.env.FINGERPRINT_AGENT_SOFTWARE_MATCHER || "")
     .trim()
@@ -1447,6 +1464,25 @@ while (true) {
 
   // Resolver stationId: del config/args o por auto-registro (machineId -> pc-1..pc-6)
   let stationId = runtime.stationId || cachedStationId;
+
+  // Opción: auto-identificar por hostname local (útil cuando el biométrico está
+  // en varias PCs y no quieres editar stationId en cada una).
+  if (!stationId) {
+    const autoHostname =
+      String(process.env.FINGERPRINT_AGENT_AUTO_STATIONID || "").trim() === "1";
+    if (autoHostname) {
+      const hostId =
+        normalizeStationId(runtime.hostname) ||
+        normalizeStationId(runtime.machineId) ||
+        null;
+      if (hostId) {
+        stationId = hostId;
+        cachedStationId = hostId;
+        console.log(`[INFO] stationId auto por hostname: ${hostId}`);
+      }
+    }
+  }
+
   if (!stationId) {
     const now = Date.now();
     if (now - lastRegisterAttemptAt > 10_000) {
