@@ -334,10 +334,26 @@ function loadMatcher() {
     };
   }
 
-  const FTR_DATA = koffi.struct("FTR_DATA", {
-    dwSize: "uint32",
-    pData: "void *",
-  });
+  let FTR_DATA = null;
+  try {
+    FTR_DATA = koffi.struct("FTR_DATA", {
+      dwSize: "uint32",
+      pData: "void *",
+    });
+  } catch (e) {
+    const msg = e?.message || String(e);
+    if (
+      /duplicate type name/i.test(msg) ||
+      /Duplicate type name 'FTR_DATA'/.test(msg)
+    ) {
+      console.warn(
+        "[WARN] Tipo FTR_DATA ya definido por otra parte; ignorando redefinición.",
+      );
+      FTR_DATA = null;
+    } else {
+      throw e;
+    }
+  }
 
   const initialize = resolveFunction(
     lib,
