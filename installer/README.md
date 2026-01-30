@@ -98,9 +98,12 @@ activa en `env`:
 
 - `FINGERPRINT_AGENT_AUTO_STATIONID=1`
 
-Cuando está activo y no hay `stationId` en el config, el agente usa el `hostname`
-local como `stationId` (normalizado), evitando que tengas que editar el archivo en
-cada instalación.
+Cuando está activo y no hay `stationId` en el config, el agente llama al endpoint
+`/fingerprint/agent/register` y el backend le asigna una estación válida del listado
+configurado (`FINGERPRINT_STATIONS`, por defecto `pc-1..pc-6`).
+
+Nota: el backend valida `stationId` contra ese listado, por lo que no se puede usar
+el `hostname` como `stationId` a menos que también lo agregues a `FINGERPRINT_STATIONS`.
 
 ### Instalar en varias PCs sin editar `stationId`
 

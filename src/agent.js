@@ -43,8 +43,7 @@ function getSoftwareMatcherPolicyOnAgent() {
     .toLowerCase();
 
   if (flag === "1") return { enabled: true, explicit: true, reason: "env=1" };
-  if (flag === "0")
-    return { enabled: false, explicit: true, reason: "env=0" };
+  if (flag === "0") return { enabled: false, explicit: true, reason: "env=0" };
 
   const hasUrlEnv =
     typeof process.env.FINGERPRINT_SOFTWARE_MATCHER_URL === "string" &&
@@ -1465,27 +1464,17 @@ while (true) {
   // Resolver stationId: del config/args o por auto-registro (machineId -> pc-1..pc-6)
   let stationId = runtime.stationId || cachedStationId;
 
-  // Opción: auto-identificar por hostname local (útil cuando el biométrico está
-  // en varias PCs y no quieres editar stationId en cada una).
-  if (!stationId) {
-    const autoHostname =
-      String(process.env.FINGERPRINT_AGENT_AUTO_STATIONID || "").trim() === "1";
-    if (autoHostname) {
-      const hostId =
-        normalizeStationId(runtime.hostname) ||
-        normalizeStationId(runtime.machineId) ||
-        null;
-      if (hostId) {
-        stationId = hostId;
-        cachedStationId = hostId;
-        console.log(`[INFO] stationId auto por hostname: ${hostId}`);
-      }
-    }
-  }
+  // Importante: el backend valida stationId contra un listado (por defecto pc-1..pc-6).
+  // Por eso NO podemos usar hostname como stationId directamente.
+  // En cambio, cuando está activo AUTO_STATIONID, forzamos el auto-registro para que
+  // el backend asigne una estación válida para este machineId/hostname.
+  const autoStationIdEnabled =
+    String(process.env.FINGERPRINT_AGENT_AUTO_STATIONID || "").trim() === "1";
 
   if (!stationId) {
     const now = Date.now();
-    if (now - lastRegisterAttemptAt > 10_000) {
+    const registerIntervalMs = autoStationIdEnabled ? 2000 : 10_000;
+    if (now - lastRegisterAttemptAt > registerIntervalMs) {
       lastRegisterAttemptAt = now;
       try {
         const assigned = await registerStation(runtime);
@@ -1522,7 +1511,17 @@ while (true) {
       await heartbeat(effectiveRuntime);
       lastHeartbeat = now;
     } catch (e) {
-      console.warn("Heartbeat falló:", e.message);
+      const msg = e?.message || String(e);
+      if (msg.toLowerCase().includes("stationid inválido")) {
+        console.warn(
+          "Heartbeat falló: stationId inválido. Se limpiará cache y se reintentará auto-registro.",
+        );
+        cachedStationId = null;
+        lastRegisterAttemptAt = 0;
+        await sleep(500);
+        continue;
+      }
+      console.warn("Heartbeat falló:", msg);
     }
   }
 
@@ -1530,7 +1529,17 @@ while (true) {
   try {
     job = await nextJob(effectiveRuntime);
   } catch (e) {
-    console.warn("Error consultando jobs:", e.message);
+    const msg = e?.message || String(e);
+    if (msg.toLowerCase().includes("stationid inválido")) {
+      console.warn(
+        "Error consultando jobs: stationId inválido. Se limpiará cache y se reintentará auto-registro.",
+      );
+      cachedStationId = null;
+      lastRegisterAttemptAt = 0;
+      await sleep(500);
+      continue;
+    }
+    console.warn("Error consultando jobs:", msg);
     await sleep(effectiveRuntime.pollIntervalMs);
     continue;
   }
