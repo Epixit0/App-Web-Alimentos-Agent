@@ -20,12 +20,30 @@ function normalizeBaseUrl(value) {
   return trimmed.replace(/\/+$/, "");
 }
 
+function getSoftwareMatcherPolicyOnAgent() {
+  const flag = String(process.env.FINGERPRINT_AGENT_SOFTWARE_MATCHER || "")
+    .trim()
+    .toLowerCase();
+
+  if (flag === "1") return { enabled: true, explicit: true, reason: "env=1" };
+  if (flag === "0")
+    return { enabled: false, explicit: true, reason: "env=0" };
+
+  const hasUrlEnv =
+    typeof process.env.FINGERPRINT_SOFTWARE_MATCHER_URL === "string" &&
+    process.env.FINGERPRINT_SOFTWARE_MATCHER_URL.trim();
+
+  // Compatibilidad: si el URL está configurado pero olvidaron activar el flag,
+  // intentamos SourceAFIS primero.
+  if (hasUrlEnv) {
+    return { enabled: true, explicit: false, reason: "url configured" };
+  }
+
+  return { enabled: false, explicit: false, reason: "default off" };
+}
+
 function isSoftwareMatcherEnabledOnAgent() {
-  return (
-    String(process.env.FINGERPRINT_AGENT_SOFTWARE_MATCHER || "")
-      .trim()
-      .toLowerCase() === "1"
-  );
+  return getSoftwareMatcherPolicyOnAgent().enabled;
 }
 
 function getAgentSoftwareMatcherBaseUrl() {
@@ -387,6 +405,18 @@ console.log(
 // OJO: fingerprintScanner y fingerprintMatcher leen process.env para ubicar DLLs.
 // Por eso aplicamos env del config ANTES de inicializarlos.
 applyEnvFromConfigFile();
+
+try {
+  const policy = getSoftwareMatcherPolicyOnAgent();
+  const baseUrl = getAgentSoftwareMatcherBaseUrl();
+  const serverMatchRequested =
+    String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
+  console.log(
+    `[INFO] matcherMode: softwareMatcher=${policy.enabled ? "on" : "off"} (explicit=${policy.explicit ? "yes" : "no"}, reason=${policy.reason}) baseUrl=${baseUrl} serverMatch=${serverMatchRequested ? "1" : "0"}`,
+  );
+} catch {
+  // ignore
+}
 
 try {
   const info = getMatcherInfo();
@@ -1101,10 +1131,14 @@ async function verifyForWorker(runtime, workerId, capturedTemplate) {
 
 async function capture(job) {
   const jobType = job?.type;
-  const useSoftwareMatcher = isSoftwareMatcherEnabledOnAgent();
-  const serverMatchMode =
-    !useSoftwareMatcher &&
+  const softwarePolicy = getSoftwareMatcherPolicyOnAgent();
+  const serverMatchRequested =
     String(process.env.FINGERPRINT_AGENT_SERVER_MATCH || "").trim() === "1";
+
+  // Nota: server-match y software-matcher son mutuamente excluyentes por diseño.
+  // Si software matcher está activo, preferimos SourceAFIS en el agente.
+  let useSoftwareMatcher = softwarePolicy.enabled;
+  let serverMatchMode = !useSoftwareMatcher && serverMatchRequested;
   const enrollProvider = String(process.env.FTR_ENROLL_PROVIDER || "native")
     .trim()
     .toLowerCase();
@@ -1150,54 +1184,68 @@ async function capture(job) {
       useSoftwareMatcher &&
       (jobType === "enroll" || jobType === "verify" || jobType === "identify")
     ) {
-      const defaults = getDefaultRawParamsOnAgent();
+      try {
+        const defaults = getDefaultRawParamsOnAgent();
 
-      const warmupAttemptsRaw = Number(process.env.FTR_WARMUP_ATTEMPTS || 8);
-      const warmupAttempts =
-        Number.isFinite(warmupAttemptsRaw) && warmupAttemptsRaw > 0
-          ? Math.min(warmupAttemptsRaw, 20)
-          : 8;
+        const warmupAttemptsRaw = Number(process.env.FTR_WARMUP_ATTEMPTS || 8);
+        const warmupAttempts =
+          Number.isFinite(warmupAttemptsRaw) && warmupAttemptsRaw > 0
+            ? Math.min(warmupAttemptsRaw, 20)
+            : 8;
 
-      let warm = null;
-      for (let i = 0; i < warmupAttempts; i += 1) {
-        warm = await scanner.captureFingerprintWithMeta(1, 153600);
-        if (
-          warm?.frame &&
-          warm.frame.length > 0 &&
-          warm.frame.some((b) => b !== 0)
-        )
-          break;
-        await new Promise((r) => setTimeout(r, 150));
+        let warm = null;
+        for (let i = 0; i < warmupAttempts; i += 1) {
+          warm = await scanner.captureFingerprintWithMeta(1, 153600);
+          if (
+            warm?.frame &&
+            warm.frame.length > 0 &&
+            warm.frame.some((b) => b !== 0)
+          )
+            break;
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        const res = await scanner.captureFingerprintWithMeta(5, 153600);
+        if (!res?.frame || res.frame.length === 0) {
+          throw new Error("No se pudo capturar la huella");
+        }
+
+        const hasData = res.frame.some((b) => b !== 0);
+        if (!hasData) {
+          throw new Error("La huella capturada no contiene datos válidos");
+        }
+
+        const width = res.width || defaults.width;
+        const height = res.height || defaults.height;
+        const dpi = res.dpi || defaults.dpi;
+
+        const tpl = await softwareCreateTemplateFromRaw(res.frame, {
+          width,
+          height,
+          dpi,
+        });
+
+        return {
+          _format: "sourceafis",
+          template: tpl,
+          raw: res.frame,
+          rawWidth: width,
+          rawHeight: height,
+          rawDpi: dpi,
+        };
+      } catch (e) {
+        // Si el uso de software matcher NO fue explícito, hacemos fallback al flujo nativo
+        // para no bloquear capturas cuando el servicio no está disponible.
+        if (!softwarePolicy.explicit) {
+          console.warn(
+            `[WARN] SoftwareMatcher no disponible (${e?.message || String(e)}). Usando enrolamiento nativo.`,
+          );
+          useSoftwareMatcher = false;
+          serverMatchMode = serverMatchRequested;
+        } else {
+          throw e;
+        }
       }
-
-      const res = await scanner.captureFingerprintWithMeta(5, 153600);
-      if (!res?.frame || res.frame.length === 0) {
-        throw new Error("No se pudo capturar la huella");
-      }
-
-      const hasData = res.frame.some((b) => b !== 0);
-      if (!hasData) {
-        throw new Error("La huella capturada no contiene datos válidos");
-      }
-
-      const width = res.width || defaults.width;
-      const height = res.height || defaults.height;
-      const dpi = res.dpi || defaults.dpi;
-
-      const tpl = await softwareCreateTemplateFromRaw(res.frame, {
-        width,
-        height,
-        dpi,
-      });
-
-      return {
-        _format: "sourceafis",
-        template: tpl,
-        raw: res.frame,
-        rawWidth: width,
-        rawHeight: height,
-        rawDpi: dpi,
-      };
     }
 
     // En modo server-match, evitamos completamente el matcher nativo (FTRAPI.dll):
